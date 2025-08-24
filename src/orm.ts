@@ -123,77 +123,108 @@ export class TauriORM {
     return new SelectQueryBuilder<T>(fields);
   }
 
-  async insert<T extends Record<string, any>>(
-    table: Table<any>,
-    data: T
-  ): Promise<void> {
-    const db = getDb();
-
-    const keys = Object.keys(data);
-    const values = Object.values(data);
-    const placeholders = values.map(() => "?").join(", ");
-
-    const query = `INSERT INTO ${table._tableName} (${keys.join(
-      ", "
-    )}) VALUES (${placeholders})`;
-
-    await db.execute(query, values);
-  }
-
-  async update(
-    table: Table<any>,
-    data: Record<string, any>,
-    where?: Record<string, any> | SQL
-  ): Promise<void> {
-    const db = getDb();
-    const setKeys = Object.keys(data);
-    const setClause = setKeys.map((k) => `${k} = ?`).join(", ");
-    const setValues = Object.values(data);
-
-    let query = `UPDATE ${table._tableName} SET ${setClause}`;
-    const bindings: any[] = [...setValues];
-
-    if (where) {
-      if (typeof (where as any).toSQL === "function") {
-        const sql = (where as SQL).toSQL();
-        query += ` WHERE ${sql.clause}`;
-        bindings.push(...sql.bindings);
-      } else {
-        const entries = Object.entries(where as Record<string, any>);
-        if (entries.length > 0) {
-          query += " WHERE " + entries.map(([k]) => `${k} = ?`).join(" AND ");
-          bindings.push(...entries.map(([, v]) => v));
+  // --- Drizzle-style CRUD builders ---
+  insert(table: Table<any>) {
+    return new (class InsertBuilder {
+      _table = table;
+      _rows: Record<string, any>[] = [];
+      values(rowOrRows: Record<string, any> | Record<string, any>[]) {
+        this._rows = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
+        return this;
+      }
+      async execute() {
+        const db = getDb();
+        for (const data of this._rows) {
+          const keys = Object.keys(data);
+          const values = Object.values(data);
+          const placeholders = values.map(() => "?").join(", ");
+          const query = `INSERT INTO ${this._table._tableName} (${keys.join(
+            ", "
+          )}) VALUES (${placeholders})`;
+          await db.execute(query, values);
         }
       }
-    }
-
-    await db.execute(query, bindings);
+    })();
   }
 
-  async delete(
-    table: Table<any>,
-    where?: Record<string, any> | SQL
-  ): Promise<void> {
-    const db = getDb();
-    let query = `DELETE FROM ${table._tableName}`;
-    const bindings: any[] = [];
-
-    if (where) {
-      if (typeof (where as any).toSQL === "function") {
-        const sql = (where as SQL).toSQL();
-        query += ` WHERE ${sql.clause}`;
-        bindings.push(...sql.bindings);
-      } else {
-        const entries = Object.entries(where as Record<string, any>);
-        if (entries.length > 0) {
-          query += " WHERE " + entries.map(([k]) => `${k} = ?`).join(" AND ");
-          bindings.push(...entries.map(([, v]) => v));
-        }
+  update(table: Table<any>) {
+    return new (class UpdateBuilder {
+      _table = table;
+      _data: Record<string, any> | null = null;
+      _where: Record<string, any> | SQL | null = null;
+      set(data: Record<string, any>) {
+        this._data = data;
+        return this;
       }
-    }
-
-    await db.execute(query, bindings);
+      where(cond: Record<string, any> | SQL) {
+        this._where = cond;
+        return this;
+      }
+      async execute() {
+        if (!this._data)
+          throw new Error("Update requires set() before execute()");
+        const db = getDb();
+        const setKeys = Object.keys(this._data);
+        const setClause = setKeys.map((k) => `${k} = ?`).join(", ");
+        const bindings: any[] = Object.values(this._data);
+        let query = `UPDATE ${this._table._tableName} SET ${setClause}`;
+        if (this._where) {
+          if (typeof (this._where as any).toSQL === "function") {
+            const sql = (this._where as SQL).toSQL();
+            query += ` WHERE ${sql.clause}`;
+            bindings.push(...sql.bindings);
+          } else {
+            const entries = Object.entries(this._where as Record<string, any>);
+            if (entries.length > 0) {
+              query += ` WHERE ${entries
+                .map(([k]) => `${k} = ?`)
+                .join(" AND ")}`;
+              bindings.push(...entries.map(([, v]) => v));
+            }
+          }
+        }
+        await db.execute(query, bindings);
+      }
+    })();
   }
+
+  delete(table: Table<any>) {
+    return new (class DeleteBuilder {
+      _table = table;
+      _where: Record<string, any> | SQL | null = null;
+      where(cond: Record<string, any> | SQL) {
+        this._where = cond;
+        return this;
+      }
+      async execute() {
+        const db = getDb();
+        let query = `DELETE FROM ${this._table._tableName}`;
+        const bindings: any[] = [];
+        if (this._where) {
+          if (typeof (this._where as any).toSQL === "function") {
+            const sql = (this._where as SQL).toSQL();
+            query += ` WHERE ${sql.clause}`;
+            bindings.push(...sql.bindings);
+          } else {
+            const entries = Object.entries(this._where as Record<string, any>);
+            if (entries.length > 0) {
+              query += ` WHERE ${entries
+                .map(([k]) => `${k} = ?`)
+                .join(" AND ")}`;
+              bindings.push(...entries.map(([, v]) => v));
+            }
+          }
+        }
+        await db.execute(query, bindings);
+      }
+    })();
+  }
+
+  // legacy direct methods removed in favor of builder APIs
+
+  // legacy direct methods removed in favor of builder APIs
+
+  // legacy direct methods removed in favor of builder APIs
 
   async run(query: string, bindings: any[] = []): Promise<void> {
     const db = getDb();
@@ -207,9 +238,29 @@ export class TauriORM {
     const columns: Column<any>[] = Object.values(table._schema);
     const columnDefs = columns.map((col) => {
       let def = `${col.name} ${col.type}`;
-      if (col.isPrimaryKey) def += " PRIMARY KEY AUTOINCREMENT";
+      if (col.isPrimaryKey) {
+        def += col.autoIncrement
+          ? " PRIMARY KEY AUTOINCREMENT"
+          : " PRIMARY KEY";
+      }
       if (col.isNotNull) def += " NOT NULL";
-      if (col.hasDefault) def += " DEFAULT CURRENT_TIMESTAMP";
+      if (col.defaultValue !== undefined) {
+        const dv: any = col.defaultValue as any;
+        if (dv && typeof dv === "object" && "raw" in dv) {
+          def += ` DEFAULT ${dv.raw}`;
+        } else if (typeof dv === "string") {
+          def += ` DEFAULT '${dv.replace(/'/g, "''")}'`;
+        } else {
+          def += ` DEFAULT ${dv}`;
+        }
+      }
+      if (col.references && !col.isPrimaryKey) {
+        def += ` REFERENCES ${col.references.table} (${col.references.column})`;
+        if (col.references.onDelete)
+          def += ` ON DELETE ${col.references.onDelete.toUpperCase()}`;
+        if (col.references.onUpdate)
+          def += ` ON UPDATE ${col.references.onUpdate.toUpperCase()}`;
+      }
       return def;
     });
     return `CREATE TABLE IF NOT EXISTS ${tableName} (${columnDefs.join(
@@ -331,25 +382,73 @@ export function relations(
 
 type RelationConfig = OneRelation | ManyRelation;
 
+// With-spec for nested relational queries and selective columns
+type WithSpec = Record<
+  string,
+  boolean | { with?: WithSpec; columns?: string[] }
+>;
+
+function getPrimaryKey(table: Table<any>): Column<any> {
+  const cols: Column[] = Object.values(table._schema);
+  return (
+    cols.find((c) => c.isPrimaryKey) ||
+    cols.find((c) => c.name === "id") ||
+    cols[0]
+  );
+}
+
+function guessChildFk(
+  child: Table<any>,
+  base: Table<any>,
+  rel?: RelationConfig
+): Column<any> | null {
+  const childCols: Column[] = Object.values(child._schema);
+  if (rel && rel.kind === "one" && rel.cfg?.fields?.[0])
+    return rel.cfg.fields[0];
+  const basePk = getPrimaryKey(base);
+  const guessNames = [
+    `${base._tableName}_id`,
+    `${base._tableName}Id`,
+    `${basePk.name}`,
+    `${base._tableName.slice(0, -1)}Id`,
+  ];
+  return (
+    childCols.find((c) => guessNames.includes(c.name)) ||
+    childCols.find((c) => /.*_id$/i.test(c.name)) ||
+    null
+  );
+}
+
+function isFlatWith(spec: WithSpec): boolean {
+  return Object.values(spec).every((v) => typeof v === "boolean");
+}
+
 // Eager loading using simple N+1 strategy for now
 export function makeQueryAPI(
   tables: Record<string, Table<any>>,
   relDefs: Record<string, Record<string, RelationConfig>>
 ) {
   const api: any = {};
+  const tableKeyByName: Record<string, string> = {};
+  for (const [k, t] of Object.entries(tables)) tableKeyByName[t._tableName] = k;
   for (const [tblKey, tbl] of Object.entries(tables)) {
     api[tblKey] = {
       async findMany(opts?: {
-        with?: Record<string, boolean>;
+        with?: WithSpec;
         join?: boolean;
+        columns?: string[] | Record<string, boolean>;
+        where?: SQL | Record<string, any>;
+        orderBy?: string[];
+        limit?: number;
+        offset?: number;
       }) {
         const base = tbl;
-        const withSpec = opts?.with ?? {};
+        const withSpec = (opts?.with as WithSpec) ?? {};
         const dbi = getDb();
 
         const rels = relDefs[tblKey] ?? {};
 
-        if (opts?.join) {
+        if (opts?.join && isFlatWith(withSpec)) {
           const baseCols: Column[] = Object.values(base._schema);
           const basePk =
             baseCols.find((c) => c.isPrimaryKey) ||
@@ -357,14 +456,24 @@ export function makeQueryAPI(
             baseCols[0];
 
           const selectParts: string[] = [];
-          for (const c of baseCols) {
-            selectParts.push(
-              `${base._tableName}.${c.name} AS __base_${c.name}`
-            );
+          let baseSelected: string[];
+          if (opts?.columns && !Array.isArray(opts.columns)) {
+            baseSelected = Object.entries(opts.columns)
+              .filter(([, v]) => !!v)
+              .map(([k]) => k);
+          } else if (
+            Array.isArray(opts?.columns) &&
+            (opts!.columns as string[]).length > 0
+          ) {
+            baseSelected = opts!.columns as string[];
+          } else {
+            baseSelected = baseCols.map((c) => c.name);
           }
+          for (const name of baseSelected)
+            selectParts.push(`${base._tableName}.${name} AS __base_${name}`);
 
           const joins: string[] = [];
-          const relColsMap: Record<string, Column<any>[]> = {};
+          const relColsMap: Record<string, string[]> = {};
           const fkMap: Record<
             string,
             { childFk: Column<any>; childPk: Column<any> | null }
@@ -380,45 +489,55 @@ export function makeQueryAPI(
               childCols.find((c) => c.isPrimaryKey) ||
               childCols.find((c) => c.name === "id") ||
               null;
-            let childFk: Column | undefined =
-              rel.kind === "one" && rel.cfg?.fields?.[0]
-                ? rel.cfg.fields[0]
-                : undefined;
-            if (!childFk) {
-              const guessNames = [
-                `${base._tableName}_id`,
-                `${base._tableName}Id`,
-                `${basePk.name}`,
-                `${base._tableName.slice(0, -1)}Id`,
-              ];
-              childFk =
-                childCols.find((c) => guessNames.includes(c.name)) ||
-                childCols.find((c) => /.*_id$/i.test(c.name));
-            }
+            const childFk = guessChildFk(child, base, rel);
             if (!childFk) continue;
-
             fkMap[relName] = { childFk, childPk };
-            relColsMap[relName] = childCols;
-
-            for (const c of childCols) {
+            const selected =
+              typeof enabled === "object" && (enabled as any).columns?.length
+                ? (enabled as any).columns!
+                : childCols.map((c) => c.name);
+            relColsMap[relName] = selected;
+            for (const name of selected)
               selectParts.push(
-                `${child._tableName}.${c.name} AS __rel_${relName}_${c.name}`
+                `${child._tableName}.${name} AS __rel_${relName}_${name}`
               );
-            }
             joins.push(
               `LEFT JOIN ${child._tableName} ON ${child._tableName}.${childFk.name} = ${base._tableName}.${basePk.name}`
             );
           }
 
-          const sql = `SELECT ${selectParts.join(", ")} FROM ${
+          let sqlText = `SELECT ${selectParts.join(", ")} FROM ${
             base._tableName
           }${joins.length ? " " + joins.join(" ") : ""}`;
-          const rows = await dbi.select<any[]>(sql);
+          const bindings: any[] = [];
+          if (opts?.where) {
+            if (typeof (opts.where as any).toSQL === "function") {
+              const w = (opts.where as SQL).toSQL();
+              sqlText += ` WHERE ${w.clause}`;
+              bindings.push(...w.bindings);
+            } else {
+              const entries = Object.entries(opts.where as Record<string, any>);
+              if (entries.length > 0) {
+                sqlText += ` WHERE ${entries
+                  .map(([k]) => `${base._tableName}.${k} = ?`)
+                  .join(" AND ")}`;
+                bindings.push(...entries.map(([, v]) => v));
+              }
+            }
+          }
+          if (opts?.orderBy?.length)
+            sqlText += ` ORDER BY ${opts.orderBy.join(", ")}`;
+          if (typeof opts?.limit === "number")
+            sqlText += ` LIMIT ${opts.limit}`;
+          if (typeof opts?.offset === "number")
+            sqlText += ` OFFSET ${opts.offset}`;
+          const rows = await dbi.select<any[]>(sqlText, bindings);
 
           const groups = new Map<any, any>();
           for (const row of rows) {
             const baseObj: any = {};
-            for (const c of baseCols) baseObj[c.name] = row[`__base_${c.name}`];
+            for (const name of baseSelected)
+              baseObj[name] = row[`__base_${name}`];
             const baseKey = baseObj[basePk.name];
             if (!groups.has(baseKey)) {
               const seed: any = { ...baseObj };
@@ -438,9 +557,9 @@ export function makeQueryAPI(
               const childCols = relColsMap[relName];
               const childObj: any = {};
               let allNull = true;
-              for (const c of childCols) {
-                const v = row[`__rel_${relName}_${c.name}`];
-                childObj[c.name] = v;
+              for (const name of childCols) {
+                const v = row[`__rel_${relName}_${name}`];
+                childObj[name] = v;
                 if (v !== null && v !== undefined) allNull = false;
               }
               if (allNull) continue;
@@ -463,70 +582,119 @@ export function makeQueryAPI(
           return Array.from(groups.values());
         }
 
-        // Fallback N+1
-        const baseRows = await dbi.select<any[]>(
-          `SELECT * FROM ${base._tableName}`
-        );
-        const result = baseRows.map((r) => ({ ...r }));
-        for (const [relName, enabled] of Object.entries(withSpec)) {
-          if (!enabled) continue;
-          const rel = rels[relName];
-          if (!rel) continue;
-          if (rel.kind === "many") {
-            const child = rel.table;
-            const baseCols: Column[] = Object.values(base._schema);
-            const basePk =
-              baseCols.find((c) => c.isPrimaryKey) ||
-              baseCols.find((c) => c.name === "id") ||
-              baseCols[0];
-            const childCols: Column[] = Object.values(child._schema);
-            let childFk: Column | undefined = undefined;
-            if (!childFk) {
-              childFk =
-                childCols.find((c) => c.name === `${base._tableName}_id`) ||
-                childCols.find((c) => c.name === `${base._tableName}Id`) ||
-                childCols.find((c) => /.*_id$/i.test(c.name));
+        // Recursive nested loading when join is off or spec is nested
+        let baseSelected: string[];
+        if (opts?.columns && !Array.isArray(opts.columns)) {
+          baseSelected = Object.entries(opts.columns)
+            .filter(([, v]) => !!v)
+            .map(([k]) => k);
+        } else if (
+          Array.isArray(opts?.columns) &&
+          (opts!.columns as string[]).length > 0
+        ) {
+          baseSelected = opts!.columns as string[];
+        } else {
+          baseSelected = (Object.values(base._schema) as Column<any>[]).map(
+            (c) => c.name
+          );
+        }
+        let baseSql = `SELECT ${baseSelected.join(", ")} FROM ${
+          base._tableName
+        }`;
+        const baseBindings: any[] = [];
+        if (opts?.where) {
+          if (typeof (opts.where as any).toSQL === "function") {
+            const w = (opts.where as SQL).toSQL();
+            baseSql += ` WHERE ${w.clause}`;
+            baseBindings.push(...w.bindings);
+          } else {
+            const entries = Object.entries(opts.where as Record<string, any>);
+            if (entries.length > 0) {
+              baseSql += ` WHERE ${entries
+                .map(([k]) => `${k} = ?`)
+                .join(" AND ")}`;
+              baseBindings.push(...entries.map(([, v]) => v));
             }
-            if (!childFk) continue;
-            const childRows = await dbi.select<any[]>(
-              `SELECT * FROM ${child._tableName} WHERE ${
-                childFk.name
-              } IN (${baseRows.map(() => "?").join(", ")})`,
-              baseRows.map((r) => r[basePk!.name])
-            );
-            const buckets = new Map<any, any[]>();
-            for (const row of childRows) {
-              const key = row[childFk.name];
-              if (!buckets.has(key)) buckets.set(key, []);
-              buckets.get(key)!.push(row);
-            }
-            for (const r of result) {
-              const key = r[basePk!.name];
-              (r as any)[relName] = buckets.get(key) ?? [];
-            }
-          } else if (rel.kind === "one") {
-            const child = rel.table;
-            const baseCols: Column[] = Object.values(base._schema);
-            const basePk =
-              baseCols.find((c) => c.isPrimaryKey) ||
-              baseCols.find((c) => c.name === "id") ||
-              baseCols[0];
-            const childCols: Column[] = Object.values(child._schema);
-            const fk =
-              rel.cfg?.fields?.[0] ||
-              childCols.find((c) => /.*_id$/i.test(c.name));
-            if (!fk) continue;
-            const childRows = await dbi.select<any[]>(
-              `SELECT * FROM ${child._tableName} WHERE ${fk.name} IN (${baseRows
-                .map(() => "?")
-                .join(", ")})`,
-              baseRows.map((r) => r[basePk!.name])
-            );
-            const buckets = new Map<any, any>();
-            for (const row of childRows) buckets.set(row[fk.name], row);
-            for (const r of result)
-              (r as any)[relName] = buckets.get(r[basePk!.name]) ?? null;
           }
+        }
+        if (opts?.orderBy?.length)
+          baseSql += ` ORDER BY ${opts.orderBy.join(", ")}`;
+        if (typeof opts?.limit === "number") baseSql += ` LIMIT ${opts.limit}`;
+        if (typeof opts?.offset === "number")
+          baseSql += ` OFFSET ${opts.offset}`;
+        const baseRows = await dbi.select<any[]>(baseSql, baseBindings);
+        const result = baseRows.map((r) => ({ ...r }));
+        async function loadRelationsFor(
+          parents: any[],
+          parentTable: Table<any>,
+          spec: WithSpec
+        ) {
+          const parentPk = getPrimaryKey(parentTable);
+          const parentIds = parents.map((p) => p[parentPk.name]);
+          const relsMap =
+            relDefs[
+              Object.keys(tables).find(
+                (k) => tables[k]._tableName === parentTable._tableName
+              )!
+            ] || {};
+          for (const [relName, v] of Object.entries(spec)) {
+            const enabled = v as any;
+            const rel = relsMap[relName];
+            if (!rel) continue;
+            const child = rel.table;
+            const childCols: Column[] = Object.values(child._schema);
+            const selectCols =
+              enabled?.columns && enabled.columns.length > 0
+                ? enabled.columns
+                : childCols.map((c) => c.name);
+            const fkCol = guessChildFk(child, parentTable, rel);
+            if (!fkCol) continue;
+            if (rel.kind === "many") {
+              const sql = `SELECT ${selectCols.join(", ")} FROM ${
+                child._tableName
+              } WHERE ${fkCol.name} IN (${parentIds
+                .map(() => "?")
+                .join(", ")})`;
+              const rows = await dbi.select<any[]>(sql, parentIds);
+              const buckets = new Map<any, any[]>();
+              for (const r of rows) {
+                const key = r[fkCol.name];
+                if (!buckets.has(key)) buckets.set(key, []);
+                buckets.get(key)!.push(r);
+              }
+              for (const p of parents)
+                (p as any)[relName] = buckets.get(p[parentPk.name]) ?? [];
+              if (enabled?.with) {
+                const children = parents.flatMap(
+                  (p) => (p as any)[relName] as any[]
+                );
+                if (children.length > 0)
+                  await loadRelationsFor(children, child, enabled.with);
+              }
+            } else {
+              const sql = `SELECT ${selectCols.join(", ")} FROM ${
+                child._tableName
+              } WHERE ${fkCol.name} IN (${parentIds
+                .map(() => "?")
+                .join(", ")})`;
+              const rows = await dbi.select<any[]>(sql, parentIds);
+              const mapOne = new Map<any, any>();
+              for (const r of rows) mapOne.set(r[fkCol.name], r);
+              for (const p of parents)
+                (p as any)[relName] = mapOne.get(p[parentPk.name]) ?? null;
+              if (enabled?.with) {
+                const children = parents
+                  .map((p) => (p as any)[relName])
+                  .filter(Boolean);
+                if (children.length > 0)
+                  await loadRelationsFor(children, child, enabled.with);
+              }
+            }
+          }
+        }
+
+        if (Object.keys(withSpec).length > 0) {
+          await loadRelationsFor(result, base, withSpec);
         }
         return result as any[];
       },
@@ -536,8 +704,9 @@ export function makeQueryAPI(
   return api as {
     [K in keyof typeof tables]: {
       findMany: (opts?: {
-        with?: Record<string, boolean>;
+        with?: WithSpec;
         join?: boolean;
+        columns?: string[];
       }) => Promise<any[]>;
     };
   };

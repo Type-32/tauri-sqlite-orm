@@ -8,7 +8,7 @@ function generateCreateTableSql(table: Table<any>): string {
     let def = `${col.name} ${col.type}`;
     if (col.isPrimaryKey) def += " PRIMARY KEY AUTOINCREMENT";
     if (col.isNotNull) def += " NOT NULL";
-    if (col.hasDefault) def += " DEFAULT CURRENT_TIMESTAMP";
+    if (col.defaultValue) def += ` DEFAULT ${col.defaultValue}`;
     return def;
   });
 

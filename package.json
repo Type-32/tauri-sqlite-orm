@@ -1,5 +1,5 @@
 {
-  "name": "tauri-sqlite-orm",
+  "name": "@type32/tauri-sqlite-orm",
   "version": "0.0.1",
   "description": "A Drizzle-like ORM for Tauri v2's SQL JS API plugin.",
   "main": "./dist/index.js",
@@ -25,7 +25,7 @@
     "orm",
     "drizzle"
   ],
-  "author": "",
+  "author": "Type-32",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^24.3.0",
