@@ -135,8 +135,18 @@ export class TauriORM {
       async execute() {
         const db = getDb();
         for (const data of this._rows) {
-          const keys = Object.keys(data);
-          const values = Object.values(data);
+          const finalData: Record<string, any> = { ...data };
+          const schema = (this._table as any)._schema as Record<
+            string,
+            Column<any>
+          >;
+          for (const [key, col] of Object.entries(schema)) {
+            if (finalData[key] === undefined && (col as any).defaultFn) {
+              finalData[key] = (col as any).defaultFn!();
+            }
+          }
+          const keys = Object.keys(finalData);
+          const values = Object.values(finalData);
           const placeholders = values.map(() => "?").join(", ");
           const query = `INSERT INTO ${this._table._tableName} (${keys.join(
             ", "
@@ -254,6 +264,7 @@ export class TauriORM {
           def += ` DEFAULT ${dv}`;
         }
       }
+      // defaultFn is applied at insert-time; not encoded in DDL
       if (col.references && !col.isPrimaryKey) {
         def += ` REFERENCES ${col.references.table} (${col.references.column})`;
         if (col.references.onDelete)

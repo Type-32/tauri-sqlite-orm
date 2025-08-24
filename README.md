@@ -35,6 +35,7 @@ export const users = defineTable("users", {
 export const posts = defineTable("posts", {
   id: integer("id", { isPrimaryKey: true }).primaryKey(),
   content: text("content"),
+  randomId: text("random_id").$defaultFn(() => crypto.randomUUID()),
   authorId: integer("author_id"),
 });
 

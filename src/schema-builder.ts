@@ -29,6 +29,7 @@ export interface Column<T = any> {
   autoIncrement?: boolean;
   isNotNull?: boolean;
   defaultValue?: T | SQLExpression;
+  defaultFn?: () => any;
   references?: {
     table: string;
     column: string;
@@ -51,6 +52,7 @@ type ColumnBuilder<T> = Column<T> & {
   notNull: () => ColumnBuilder<T>;
   default: (value: T | SQLExpression) => ColumnBuilder<T>;
   $type: <U>() => ColumnBuilder<U>;
+  $defaultFn: (fn: () => any) => ColumnBuilder<T>;
   references: (
     target: () => Column<any>,
     actions?: { onDelete?: UpdateDeleteAction; onUpdate?: UpdateDeleteAction }
@@ -75,6 +77,10 @@ function createColumn<T>(
     return col;
   };
   col.$type = <U>() => col as unknown as ColumnBuilder<U>;
+  col.$defaultFn = (fn: () => any) => {
+    col.defaultFn = fn;
+    return col;
+  };
   col.references = (
     target: () => Column<any>,
     actions?: { onDelete?: UpdateDeleteAction; onUpdate?: UpdateDeleteAction }
