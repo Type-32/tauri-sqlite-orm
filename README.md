@@ -5,7 +5,7 @@ A Drizzle-like TypeScript ORM tailored for Tauri v2's `@tauri-apps/plugin-sql` (
 ### Install
 
 ```bash
-pnpm add tauri-sqlite-orm @tauri-apps/plugin-sql
+pnpm add @type32/tauri-sqlite-orm @tauri-apps/plugin-sql
 ```
 
 Make sure the SQL plugin is registered on the Rust side (see Tauri docs).
