@@ -348,6 +348,314 @@ export class TauriORM {
       throw new Error("No tables configured. Call db.configure({...}) first.");
     await this.migrate(Object.values(this._tables), options);
   }
+
+  // --- Schema diff and CLI-like helpers ---
+
+  async diffSchema(): Promise<{
+    extraTables: string[];
+    missingTables: string[];
+    tables: Record<
+      string,
+      {
+        missingColumns: string[];
+        extraColumns: string[];
+        changedColumns: Array<{
+          name: string;
+          diffs: {
+            type?: boolean;
+            pk?: boolean;
+            notNull?: boolean;
+            default?: boolean;
+          };
+        }>;
+      }
+    >;
+  }> {
+    if (!this._tables) throw new Error("No tables configured.");
+    const dbi = getDb();
+    const configuredNames = Object.values(this._tables).map(
+      (t) => (t as any)._tableName as string
+    );
+    const existing = await dbi.select<any[]>(
+      `SELECT name FROM sqlite_master WHERE type='table'`
+    );
+    const existingNames = existing.map((r) => r.name);
+    const extraTables = existingNames.filter(
+      (n) => !configuredNames.includes(n)
+    );
+    const missingTables = configuredNames.filter(
+      (n) => !existingNames.includes(n)
+    );
+    const tables: any = {};
+    for (const tbl of Object.values(this._tables)) {
+      const tableName = (tbl as any)._tableName as string;
+      if (!existingNames.includes(tableName)) {
+        tables[tableName] = {
+          missingColumns: Object.keys((tbl as any)._schema),
+          extraColumns: [],
+          changedColumns: [],
+        };
+        continue;
+      }
+      const cols = await dbi.select<any[]>(`PRAGMA table_info('${tableName}')`);
+      const colMap = new Map(cols.map((c) => [c.name, c]));
+      const modelCols = Object.values(
+        (tbl as any)._schema as Record<string, Column<any>>
+      );
+      const missingColumns: string[] = [];
+      const extraColumns: string[] = [];
+      const changedColumns: Array<{ name: string; diffs: any }> = [];
+      const modelNamesSet = new Set(modelCols.map((c) => c.name));
+      for (const m of modelCols) {
+        const info = colMap.get(m.name);
+        if (!info) {
+          missingColumns.push(m.name);
+          continue;
+        }
+        const diffs: any = {};
+        if ((info.type || "").toUpperCase() !== m.type.toUpperCase())
+          diffs.type = true;
+        if (!!info.pk !== !!m.isPrimaryKey) diffs.pk = true;
+        if (!!info.notnull !== !!m.isNotNull) diffs.notNull = true;
+        const modelDv =
+          m.defaultValue &&
+          typeof m.defaultValue === "object" &&
+          (m.defaultValue as any).raw
+            ? (m.defaultValue as any).raw
+            : m.defaultValue ?? null;
+        if ((info.dflt_value ?? null) !== (modelDv as any))
+          diffs.default = true;
+        if (Object.keys(diffs).length)
+          changedColumns.push({ name: m.name, diffs });
+      }
+      for (const c of cols)
+        if (!modelNamesSet.has(c.name)) extraColumns.push(c.name);
+      tables[tableName] = { missingColumns, extraColumns, changedColumns };
+    }
+    return { extraTables, missingTables, tables };
+  }
+
+  async generate() {
+    if (!this._tables) throw new Error("No tables configured.");
+    return {
+      statements: Object.values(this._tables).map((t) =>
+        this.buildCreateTableSQL(t)
+      ),
+    };
+  }
+  async migrateCli(opts?: { name?: string; track?: boolean }) {
+    return this.migrateConfigured(opts);
+  }
+  async push(opts?: { dropExtraColumns?: boolean; preserveData?: boolean }) {
+    return this.forcePush(opts);
+  }
+  async pull() {
+    return this.pullSchema();
+  }
+  async studio() {
+    const dbi = getDb() as any;
+    return { driver: "sqlite", path: dbi.path };
+  }
+
+  // --- Schema detection / signature ---
+  private async ensureSchemaMeta(): Promise<void> {
+    await this.run(
+      `CREATE TABLE IF NOT EXISTS _schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`
+    );
+  }
+
+  private async getSchemaMeta(key: string): Promise<string | null> {
+    const dbi = getDb();
+    await this.ensureSchemaMeta();
+    const rows = await dbi.select<any[]>(
+      `SELECT value FROM _schema_meta WHERE key = ?`,
+      [key]
+    );
+    return rows?.[0]?.value ?? null;
+  }
+
+  private async setSchemaMeta(key: string, value: string): Promise<void> {
+    const dbi = getDb();
+    await this.ensureSchemaMeta();
+    await dbi.execute(
+      `INSERT INTO _schema_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [key, value]
+    );
+  }
+
+  private normalizeColumn(col: Column<any>): any {
+    return {
+      name: col.name,
+      type: col.type,
+      pk: !!col.isPrimaryKey,
+      ai: !!col.autoIncrement,
+      nn: !!col.isNotNull,
+      dv:
+        col.defaultValue &&
+        typeof col.defaultValue === "object" &&
+        (col.defaultValue as any).raw
+          ? { raw: (col.defaultValue as any).raw }
+          : col.defaultValue ?? null,
+    };
+  }
+
+  private computeModelSignature(): string {
+    if (!this._tables) return "";
+    const entries = Object.entries(this._tables).map(([k, tbl]) => {
+      const cols = Object.values(
+        (tbl as any)._schema as Record<string, Column<any>>
+      )
+        .map((c) => this.normalizeColumn(c))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      return { table: (tbl as any)._tableName as string, columns: cols };
+    });
+    entries.sort((a, b) => a.table.localeCompare(b.table));
+    return JSON.stringify(entries);
+  }
+
+  async isSchemaDirty(): Promise<{
+    dirty: boolean;
+    current: string;
+    stored: string | null;
+  }> {
+    const sig = this.computeModelSignature();
+    const stored = await this.getSchemaMeta("schema_signature");
+    return { dirty: sig !== stored, current: sig, stored };
+  }
+
+  async migrateIfDirty(options?: { name?: string; track?: boolean }) {
+    const status = await this.isSchemaDirty();
+    if (!this._tables) throw new Error("No tables configured.");
+    if (status.dirty) {
+      await this.migrate(Object.values(this._tables), options);
+      await this.setSchemaMeta(
+        "schema_signature",
+        this.computeModelSignature()
+      );
+      return true;
+    }
+    return false;
+  }
+
+  // Pull current DB schema (minimal) for configured tables
+  async pullSchema(): Promise<Record<string, any>> {
+    if (!this._tables) throw new Error("No tables configured.");
+    const dbi = getDb();
+    const result: Record<string, any> = {};
+    for (const tbl of Object.values(this._tables)) {
+      const name = (tbl as any)._tableName as string;
+      const cols = await dbi.select<any[]>(`PRAGMA table_info('${name}')`);
+      result[name] = cols.map((c) => ({
+        name: c.name,
+        type: c.type,
+        notnull: !!c.notnull,
+        pk: !!c.pk,
+        dflt_value: c.dflt_value ?? null,
+      }));
+    }
+    return result;
+  }
+
+  private buildCreateTableSQL(table: Table<any>): string {
+    return this.generateCreateTableSql(table);
+  }
+
+  private async tableExists(name: string): Promise<boolean> {
+    const dbi = getDb();
+    const rows = await dbi.select<any[]>(
+      `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`,
+      [name]
+    );
+    return rows.length > 0;
+  }
+
+  // Force push model to DB: add missing tables/columns, rebuild tables if incompatible
+  async forcePush(options?: {
+    dropExtraColumns?: boolean;
+    preserveData?: boolean;
+  }) {
+    if (!this._tables) throw new Error("No tables configured.");
+    const dbi = getDb();
+    const preserve = options?.preserveData !== false;
+    for (const tbl of Object.values(this._tables)) {
+      const tableName = (tbl as any)._tableName as string;
+      const exists = await this.tableExists(tableName);
+      if (!exists) {
+        await this.run(this.buildCreateTableSQL(tbl));
+        continue;
+      }
+      // Introspect existing
+      const existingCols = await dbi.select<any[]>(
+        `PRAGMA table_info('${tableName}')`
+      );
+      const existingMap = new Map(existingCols.map((c) => [c.name, c]));
+      const modelCols = Object.values(
+        (tbl as any)._schema as Record<string, Column<any>>
+      );
+      const missing: Column<any>[] = [];
+      let requiresRebuild = false;
+      for (const m of modelCols) {
+        const info = existingMap.get(m.name);
+        if (!info) {
+          missing.push(m);
+          continue;
+        }
+        const typeDiff =
+          (info.type || "").toUpperCase() !== m.type.toUpperCase();
+        const pkDiff = !!info.pk !== !!m.isPrimaryKey;
+        const nnDiff = !!info.notnull !== !!m.isNotNull;
+        // Default comparison is best-effort
+        const modelDv =
+          m.defaultValue &&
+          typeof m.defaultValue === "object" &&
+          (m.defaultValue as any).raw
+            ? (m.defaultValue as any).raw
+            : m.defaultValue ?? null;
+        const defDiff = (info.dflt_value ?? null) !== (modelDv as any);
+        if (typeDiff || pkDiff || (nnDiff && !modelDv) || defDiff) {
+          requiresRebuild = true;
+        }
+      }
+      if (requiresRebuild) {
+        const tmp = `_new_${tableName}`;
+        // Create new table
+        await this.run(this.buildCreateTableSQL(tbl));
+        // But created with original name; create with tmp name instead
+        // Workaround: create tmp table explicitly
+        await this.run(
+          this.buildCreateTableSQL({ ...(tbl as any), _tableName: tmp } as any)
+        );
+        const existingNames = existingCols.map((c) => c.name);
+        const modelNames = modelCols.map((c) => c.name);
+        const shared = existingNames.filter((n) => modelNames.includes(n));
+        if (preserve && shared.length > 0) {
+          await this.run(
+            `INSERT INTO ${tmp} (${shared.join(", ")}) SELECT ${shared.join(
+              ", "
+            )} FROM ${tableName}`
+          );
+        }
+        await this.run(`DROP TABLE ${tableName}`);
+        await this.run(`ALTER TABLE ${tmp} RENAME TO ${tableName}`);
+      } else {
+        // Add missing columns
+        for (const m of missing) {
+          let clause = `${m.name} ${m.type}`;
+          if (m.isNotNull) clause += " NOT NULL";
+          if (m.defaultValue !== undefined) {
+            const dv: any = m.defaultValue as any;
+            if (dv && typeof dv === "object" && "raw" in dv)
+              clause += ` DEFAULT ${dv.raw}`;
+            else if (typeof dv === "string")
+              clause += ` DEFAULT '${dv.replace(/'/g, "''")}'`;
+            else clause += ` DEFAULT ${dv}`;
+          }
+          await this.run(`ALTER TABLE ${tableName} ADD COLUMN ${clause}`);
+        }
+      }
+    }
+    await this.setSchemaMeta("schema_signature", this.computeModelSignature());
+  }
 }
 
 // Export a singleton instance for easy use
