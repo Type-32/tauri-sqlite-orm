@@ -779,6 +779,43 @@ function guessChildFk(
   );
 }
 
+function guessOneRelationJoin(
+  base: Table<any>,
+  rel: OneRelation
+): {
+  lhsTable: Table<any>;
+  lhsCol: Column<any>;
+  rhsTable: Table<any>;
+  rhsCol: Column<any>;
+} | null {
+  const child = rel.table;
+  const basePk = getPrimaryKey(base);
+  const childCols: Column[] = Object.values(child._schema);
+  // If explicit fields/references provided, honor them
+  if (
+    rel.cfg?.fields &&
+    rel.cfg?.references &&
+    rel.cfg.fields[0] &&
+    rel.cfg.references[0]
+  ) {
+    const fk = rel.cfg.fields[0];
+    const ref = rel.cfg.references[0];
+    // If fk is on child: child.fk = base.pk
+    if (childCols.some((c) => c.name === fk.name)) {
+      return { lhsTable: child, lhsCol: fk, rhsTable: base, rhsCol: ref };
+    }
+    // If fk is on base: base.fk = child.pk
+    const baseCols: Column[] = Object.values(base._schema);
+    if (baseCols.some((c) => c.name === fk.name)) {
+      return { lhsTable: base, lhsCol: fk, rhsTable: child, rhsCol: ref };
+    }
+  }
+  // Fallback: assume child has FK to base
+  const childFk = guessChildFk(child, base, rel);
+  if (!childFk) return null;
+  return { lhsTable: child, lhsCol: childFk, rhsTable: base, rhsCol: basePk };
+}
+
 function isFlatWith(spec: WithSpec): boolean {
   return Object.values(spec).every((v) => typeof v === "boolean");
 }
@@ -869,9 +906,30 @@ export function makeQueryAPI(
               childCols.find((c) => c.isPrimaryKey) ||
               childCols.find((c) => c.name === "id") ||
               null;
-            const childFk = guessChildFk(child, base, rel);
-            if (!childFk) continue;
-            fkMap[relName] = { childFk, childPk };
+            if (rel.kind === "one") {
+              const mapping = guessOneRelationJoin(base, rel);
+              if (!mapping) continue;
+              // If lhs is child (child.fk = base.pk), store fk for grouping
+              if (mapping.lhsTable._tableName === child._tableName) {
+                fkMap[relName] = { childFk: mapping.lhsCol, childPk };
+                joins.push(
+                  `LEFT JOIN ${child._tableName} ON ${mapping.lhsTable._tableName}.${mapping.lhsCol.name} = ${mapping.rhsTable._tableName}.${mapping.rhsCol.name}`
+                );
+              } else {
+                // Base has FK to child: base.fk = child.pk
+                fkMap[relName] = { childFk: mapping.rhsCol, childPk };
+                joins.push(
+                  `LEFT JOIN ${child._tableName} ON ${mapping.lhsTable._tableName}.${mapping.lhsCol.name} = ${mapping.rhsTable._tableName}.${mapping.rhsCol.name}`
+                );
+              }
+            } else {
+              const childFk = guessChildFk(child, base, rel);
+              if (!childFk) continue;
+              fkMap[relName] = { childFk, childPk };
+              joins.push(
+                `LEFT JOIN ${child._tableName} ON ${child._tableName}.${childFk.name} = ${base._tableName}.${basePk.name}`
+              );
+            }
             const selected =
               typeof enabled === "object" && (enabled as any).columns?.length
                 ? (enabled as any).columns!
@@ -881,9 +939,6 @@ export function makeQueryAPI(
               selectParts.push(
                 `${child._tableName}.${name} AS __rel_${relName}_${name}`
               );
-            joins.push(
-              `LEFT JOIN ${child._tableName} ON ${child._tableName}.${childFk.name} = ${base._tableName}.${basePk.name}`
-            );
           }
 
           let sqlText = `SELECT ${selectParts.join(", ")} FROM ${
@@ -1047,9 +1102,9 @@ export function makeQueryAPI(
               enabled?.columns && enabled.columns.length > 0
                 ? enabled.columns
                 : childCols.map((c) => c.name);
-            const fkCol = guessChildFk(child, parentTable, rel);
-            if (!fkCol) continue;
             if (rel.kind === "many") {
+              const fkCol = guessChildFk(child, parentTable, rel);
+              if (!fkCol) continue;
               const sql = `SELECT ${selectCols.join(", ")} FROM ${
                 child._tableName
               } WHERE ${fkCol.name} IN (${parentIds
@@ -1072,16 +1127,43 @@ export function makeQueryAPI(
                   await loadRelationsFor(children, child, enabled.with);
               }
             } else {
-              const sql = `SELECT ${selectCols.join(", ")} FROM ${
-                child._tableName
-              } WHERE ${fkCol.name} IN (${parentIds
-                .map(() => "?")
-                .join(", ")})`;
-              const rows = await dbi.select<any[]>(sql, parentIds);
-              const mapOne = new Map<any, any>();
-              for (const r of rows) mapOne.set(r[fkCol.name], r);
-              for (const p of parents)
-                (p as any)[relName] = mapOne.get(p[parentPk.name]) ?? null;
+              const mapping = guessOneRelationJoin(parentTable, rel);
+              if (!mapping) continue;
+              if (mapping.lhsTable._tableName === child._tableName) {
+                // child.fk = parent.pk
+                const sql = `SELECT ${selectCols.join(", ")} FROM ${
+                  child._tableName
+                } WHERE ${mapping.lhsCol.name} IN (${parentIds
+                  .map(() => "?")
+                  .join(", ")})`;
+                const rows = await dbi.select<any[]>(sql, parentIds);
+                const mapOne = new Map<any, any>();
+                for (const r of rows) mapOne.set(r[mapping.lhsCol.name], r);
+                for (const p of parents)
+                  (p as any)[relName] = mapOne.get(p[parentPk.name]) ?? null;
+              } else {
+                // parent.fk = child.pk
+                // Need to fetch children by their PKs referenced from parents
+                const parentFkName = mapping.lhsCol.name; // base fk column
+                const childPkName = mapping.rhsCol.name; // child pk column
+                const childIds = parents
+                  .map((p) => p[parentFkName])
+                  .filter((v) => v !== undefined && v !== null);
+                if (childIds.length === 0) {
+                  for (const p of parents) (p as any)[relName] = null;
+                } else {
+                  const sql = `SELECT ${selectCols.join(", ")} FROM ${
+                    child._tableName
+                  } WHERE ${childPkName} IN (${childIds
+                    .map(() => "?")
+                    .join(", ")})`;
+                  const rows = await dbi.select<any[]>(sql, childIds);
+                  const mapOne = new Map<any, any>();
+                  for (const r of rows) mapOne.set(r[childPkName], r);
+                  for (const p of parents)
+                    (p as any)[relName] = mapOne.get(p[parentFkName]) ?? null;
+                }
+              }
               if (enabled?.with) {
                 const children = parents
                   .map((p) => (p as any)[relName])
