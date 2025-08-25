@@ -57,5 +57,5 @@ export const like = (column: Column<string>, value: string): SQL =>
   comparison("LIKE", column, value);
 
 // Ordering helpers
-export const asc = (column: Column) => `${column.name} ASC`;
-export const desc = (column: Column) => `${column.name} DESC`;
+export const asc = (column: Column) => `${getQualifiedName(column)} ASC`;
+export const desc = (column: Column) => `${getQualifiedName(column)} DESC`;

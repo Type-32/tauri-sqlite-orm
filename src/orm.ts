@@ -1,6 +1,17 @@
-import { getDb } from "./connection";
+import Database from "@tauri-apps/plugin-sql";
 import type { Table, Column } from "./schema-builder";
-import type { SQL } from "./sql-helpers";
+import {
+  type SQL,
+  asc,
+  desc,
+  eq,
+  ne,
+  gt,
+  gte,
+  lt,
+  lte,
+  like,
+} from "./sql-helpers";
 
 class SelectQueryBuilder<T> {
   private _table: Table<any> | null = null;
@@ -11,8 +22,13 @@ class SelectQueryBuilder<T> {
   private _limit: number | null = null;
   private _offset: number | null = null;
   private _eager: Record<string, RelationConfig> = {};
+  private _dbProvider: () => Promise<Database>;
 
-  constructor(fields?: Record<string, Column<any>>) {
+  constructor(
+    dbProvider: () => Promise<Database>,
+    fields?: Record<string, Column<any>>
+  ) {
+    this._dbProvider = dbProvider;
     if (fields) {
       this._selectedColumns = Object.values(fields).map((c) => c.name);
     }
@@ -57,7 +73,7 @@ class SelectQueryBuilder<T> {
       throw new Error("Cannot execute select query without a 'from' table.");
     }
 
-    const db = getDb();
+    const db = await this._dbProvider();
     const bindings: any[] = [];
     let query = `SELECT ${this._selectedColumns.join(", ")} FROM ${
       this._table._tableName
@@ -111,6 +127,15 @@ export class TauriORM {
   private _tables: Record<string, Table<any>> | null = null;
   private _relations: Record<string, Record<string, RelationConfig>> | null =
     null;
+  private _dbPromise: Promise<Database>;
+
+  constructor(dbUri: string) {
+    this._dbPromise = Database.load(dbUri);
+  }
+
+  private async getDb(): Promise<Database> {
+    return this._dbPromise;
+  }
 
   // Deprecated: use configure()
   configureQuery(
@@ -120,11 +145,12 @@ export class TauriORM {
     this.configure(tables, relations);
   }
   select<T>(fields?: Record<string, Column<any>>): SelectQueryBuilder<T> {
-    return new SelectQueryBuilder<T>(fields);
+    return new SelectQueryBuilder<T>(this.getDb.bind(this), fields);
   }
 
   // --- Drizzle-style CRUD builders ---
   insert(table: Table<any>) {
+    const self = this;
     return new (class InsertBuilder {
       _table = table;
       _rows: Record<string, any>[] = [];
@@ -133,7 +159,7 @@ export class TauriORM {
         return this;
       }
       async execute() {
-        const db = getDb();
+        const db = await self.getDb();
         for (const data of this._rows) {
           const finalData: Record<string, any> = { ...data };
           const schema = (this._table as any)._schema as Record<
@@ -141,8 +167,13 @@ export class TauriORM {
             Column<any>
           >;
           for (const [key, col] of Object.entries(schema)) {
-            if (finalData[key] === undefined && (col as any).defaultFn) {
-              finalData[key] = (col as any).defaultFn!();
+            if (finalData[key] === undefined) {
+              if ((col as any).defaultFn) {
+                finalData[key] = (col as any).defaultFn!();
+              } else if ((col as any).onUpdateFn) {
+                // If no default provided but onUpdateFn exists, drizzle applies on insert too.
+                finalData[key] = (col as any).onUpdateFn!();
+              }
             }
           }
           const keys = Object.keys(finalData);
@@ -158,6 +189,7 @@ export class TauriORM {
   }
 
   update(table: Table<any>) {
+    const self = this;
     return new (class UpdateBuilder {
       _table = table;
       _data: Record<string, any> | null = null;
@@ -173,10 +205,21 @@ export class TauriORM {
       async execute() {
         if (!this._data)
           throw new Error("Update requires set() before execute()");
-        const db = getDb();
-        const setKeys = Object.keys(this._data);
+        const db = await self.getDb();
+        const schema = (this._table as any)._schema as Record<
+          string,
+          Column<any>
+        >;
+        const dataToSet: Record<string, any> = { ...this._data };
+        // Apply onUpdateFn for columns not explicitly set
+        for (const [key, col] of Object.entries(schema)) {
+          if (!(key in dataToSet) && (col as any).onUpdateFn) {
+            dataToSet[key] = (col as any).onUpdateFn!();
+          }
+        }
+        const setKeys = Object.keys(dataToSet);
         const setClause = setKeys.map((k) => `${k} = ?`).join(", ");
-        const bindings: any[] = Object.values(this._data);
+        const bindings: any[] = Object.values(dataToSet);
         let query = `UPDATE ${this._table._tableName} SET ${setClause}`;
         if (this._where) {
           if (typeof (this._where as any).toSQL === "function") {
@@ -199,6 +242,7 @@ export class TauriORM {
   }
 
   delete(table: Table<any>) {
+    const self = this;
     return new (class DeleteBuilder {
       _table = table;
       _where: Record<string, any> | SQL | null = null;
@@ -207,7 +251,7 @@ export class TauriORM {
         return this;
       }
       async execute() {
-        const db = getDb();
+        const db = await self.getDb();
         let query = `DELETE FROM ${this._table._tableName}`;
         const bindings: any[] = [];
         if (this._where) {
@@ -237,7 +281,7 @@ export class TauriORM {
   // legacy direct methods removed in favor of builder APIs
 
   async run(query: string, bindings: any[] = []): Promise<void> {
-    const db = getDb();
+    const db = await this.getDb();
     await db.execute(query, bindings);
   }
 
@@ -297,7 +341,7 @@ export class TauriORM {
   }
 
   private async hasMigration(name: string): Promise<boolean> {
-    const db = getDb();
+    const db = await this.getDb();
     const rows = await db.select<any[]>(
       `SELECT name FROM _migrations WHERE name = ?`,
       [name]
@@ -306,7 +350,7 @@ export class TauriORM {
   }
 
   private async recordMigration(name: string): Promise<void> {
-    const db = getDb();
+    const db = await this.getDb();
     await db.execute(
       `INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`,
       [name, Date.now()]
@@ -338,7 +382,7 @@ export class TauriORM {
   ) {
     this._tables = tables;
     this._relations = relDefs ?? {};
-    this.query = makeQueryAPI(tables, this._relations);
+    this.query = makeQueryAPI(tables, this._relations, this.getDb.bind(this));
     return this;
   }
 
@@ -372,7 +416,7 @@ export class TauriORM {
     >;
   }> {
     if (!this._tables) throw new Error("No tables configured.");
-    const dbi = getDb();
+    const dbi = await this.getDb();
     const configuredNames = Object.values(this._tables).map(
       (t) => (t as any)._tableName as string
     );
@@ -453,7 +497,7 @@ export class TauriORM {
     return this.pullSchema();
   }
   async studio() {
-    const dbi = getDb() as any;
+    const dbi = (await this.getDb()) as any;
     return { driver: "sqlite", path: dbi.path };
   }
 
@@ -465,7 +509,7 @@ export class TauriORM {
   }
 
   private async getSchemaMeta(key: string): Promise<string | null> {
-    const dbi = getDb();
+    const dbi = await this.getDb();
     await this.ensureSchemaMeta();
     const rows = await dbi.select<any[]>(
       `SELECT value FROM _schema_meta WHERE key = ?`,
@@ -475,7 +519,7 @@ export class TauriORM {
   }
 
   private async setSchemaMeta(key: string, value: string): Promise<void> {
-    const dbi = getDb();
+    const dbi = await this.getDb();
     await this.ensureSchemaMeta();
     await dbi.execute(
       `INSERT INTO _schema_meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
@@ -540,7 +584,7 @@ export class TauriORM {
   // Pull current DB schema (minimal) for configured tables
   async pullSchema(): Promise<Record<string, any>> {
     if (!this._tables) throw new Error("No tables configured.");
-    const dbi = getDb();
+    const dbi = await this.getDb();
     const result: Record<string, any> = {};
     for (const tbl of Object.values(this._tables)) {
       const name = (tbl as any)._tableName as string;
@@ -561,7 +605,7 @@ export class TauriORM {
   }
 
   private async tableExists(name: string): Promise<boolean> {
-    const dbi = getDb();
+    const dbi = await this.getDb();
     const rows = await dbi.select<any[]>(
       `SELECT name FROM sqlite_master WHERE type='table' AND name = ?`,
       [name]
@@ -575,7 +619,7 @@ export class TauriORM {
     preserveData?: boolean;
   }) {
     if (!this._tables) throw new Error("No tables configured.");
-    const dbi = getDb();
+    const dbi = await this.getDb();
     const preserve = options?.preserveData !== false;
     for (const tbl of Object.values(this._tables)) {
       const tableName = (tbl as any)._tableName as string;
@@ -657,9 +701,6 @@ export class TauriORM {
     await this.setSchemaMeta("schema_signature", this.computeModelSignature());
   }
 }
-
-// Export a singleton instance for easy use
-export const db = new TauriORM();
 
 // --- Soft relations API ---
 
@@ -745,7 +786,8 @@ function isFlatWith(spec: WithSpec): boolean {
 // Eager loading using simple N+1 strategy for now
 export function makeQueryAPI(
   tables: Record<string, Table<any>>,
-  relDefs: Record<string, Record<string, RelationConfig>>
+  relDefs: Record<string, Record<string, RelationConfig>>,
+  dbProvider: () => Promise<Database>
 ) {
   const api: any = {};
   const tableKeyByName: Record<string, string> = {};
@@ -756,14 +798,33 @@ export function makeQueryAPI(
         with?: WithSpec;
         join?: boolean;
         columns?: string[] | Record<string, boolean>;
-        where?: SQL | Record<string, any>;
-        orderBy?: string[];
+        where?:
+          | SQL
+          | Record<string, any>
+          | ((
+              table: Table<any>,
+              ops: {
+                eq: typeof eq;
+                ne: typeof ne;
+                gt: typeof gt;
+                gte: typeof gte;
+                lt: typeof lt;
+                lte: typeof lte;
+                like: typeof like;
+              }
+            ) => SQL);
+        orderBy?:
+          | string[]
+          | ((
+              table: Table<any>,
+              ops: { asc: typeof asc; desc: typeof desc }
+            ) => string[]);
         limit?: number;
         offset?: number;
       }) {
         const base = tbl;
         const withSpec = (opts?.with as WithSpec) ?? {};
-        const dbi = getDb();
+        const dbi = await dbProvider();
 
         const rels = relDefs[tblKey] ?? {};
 
@@ -830,7 +891,13 @@ export function makeQueryAPI(
           }${joins.length ? " " + joins.join(" ") : ""}`;
           const bindings: any[] = [];
           if (opts?.where) {
-            if (typeof (opts.where as any).toSQL === "function") {
+            if (typeof opts.where === "function") {
+              const w = opts
+                .where(base, { eq, ne, gt, gte, lt, lte, like })
+                .toSQL();
+              sqlText += ` WHERE ${w.clause}`;
+              bindings.push(...w.bindings);
+            } else if (typeof (opts.where as any).toSQL === "function") {
               const w = (opts.where as SQL).toSQL();
               sqlText += ` WHERE ${w.clause}`;
               bindings.push(...w.bindings);
@@ -844,8 +911,12 @@ export function makeQueryAPI(
               }
             }
           }
-          if (opts?.orderBy?.length)
-            sqlText += ` ORDER BY ${opts.orderBy.join(", ")}`;
+          const orderByClauses =
+            typeof opts?.orderBy === "function"
+              ? opts.orderBy(base, { asc, desc })
+              : opts?.orderBy;
+          if (orderByClauses?.length)
+            sqlText += ` ORDER BY ${orderByClauses.join(", ")}`;
           if (typeof opts?.limit === "number")
             sqlText += ` LIMIT ${opts.limit}`;
           if (typeof opts?.offset === "number")
@@ -922,7 +993,13 @@ export function makeQueryAPI(
         }`;
         const baseBindings: any[] = [];
         if (opts?.where) {
-          if (typeof (opts.where as any).toSQL === "function") {
+          if (typeof opts.where === "function") {
+            const w = opts
+              .where(base, { eq, ne, gt, gte, lt, lte, like })
+              .toSQL();
+            baseSql += ` WHERE ${w.clause}`;
+            baseBindings.push(...w.bindings);
+          } else if (typeof (opts.where as any).toSQL === "function") {
             const w = (opts.where as SQL).toSQL();
             baseSql += ` WHERE ${w.clause}`;
             baseBindings.push(...w.bindings);
@@ -936,13 +1013,17 @@ export function makeQueryAPI(
             }
           }
         }
-        if (opts?.orderBy?.length)
-          baseSql += ` ORDER BY ${opts.orderBy.join(", ")}`;
+        const orderByClauses2 =
+          typeof opts?.orderBy === "function"
+            ? opts.orderBy(base, { asc, desc })
+            : opts?.orderBy;
+        if (orderByClauses2?.length)
+          baseSql += ` ORDER BY ${orderByClauses2.join(", ")}`;
         if (typeof opts?.limit === "number") baseSql += ` LIMIT ${opts.limit}`;
         if (typeof opts?.offset === "number")
           baseSql += ` OFFSET ${opts.offset}`;
         const baseRows = await dbi.select<any[]>(baseSql, baseBindings);
-        const result = baseRows.map((r) => ({ ...r }));
+        const result = baseRows.map((r: any) => ({ ...r }));
         async function loadRelationsFor(
           parents: any[],
           parentTable: Table<any>,
@@ -1004,7 +1085,7 @@ export function makeQueryAPI(
               if (enabled?.with) {
                 const children = parents
                   .map((p) => (p as any)[relName])
-                  .filter(Boolean);
+                  .filter((x: any) => Boolean(x));
                 if (children.length > 0)
                   await loadRelationsFor(children, child, enabled.with);
               }
@@ -1017,6 +1098,35 @@ export function makeQueryAPI(
         }
         return result as any[];
       },
+      async findFirst(opts?: {
+        with?: WithSpec;
+        join?: boolean;
+        columns?: string[] | Record<string, boolean>;
+        where?:
+          | SQL
+          | Record<string, any>
+          | ((
+              table: Table<any>,
+              ops: {
+                eq: typeof eq;
+                ne: typeof ne;
+                gt: typeof gt;
+                gte: typeof gte;
+                lt: typeof lt;
+                lte: typeof lte;
+                like: typeof like;
+              }
+            ) => SQL);
+        orderBy?:
+          | string[]
+          | ((
+              table: Table<any>,
+              ops: { asc: typeof asc; desc: typeof desc }
+            ) => string[]);
+      }) {
+        const rows = await api[tblKey].findMany({ ...(opts as any), limit: 1 });
+        return rows?.[0] ?? null;
+      },
     };
   }
 
@@ -1027,6 +1137,11 @@ export function makeQueryAPI(
         join?: boolean;
         columns?: string[];
       }) => Promise<any[]>;
+      findFirst: (opts?: {
+        with?: WithSpec;
+        join?: boolean;
+        columns?: string[];
+      }) => Promise<any | null>;
     };
   };
 }

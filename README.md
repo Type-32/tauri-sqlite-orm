@@ -5,7 +5,7 @@ A Drizzle-like TypeScript ORM tailored for Tauri v2's `@tauri-apps/plugin-sql` (
 ### Install
 
 ```bash
-pnpm add @type32/tauri-sqlite-orm @tauri-apps/plugin-sql
+bun add @type32/tauri-sqlite-orm @tauri-apps/plugin-sql
 ```
 
 Make sure the SQL plugin is registered on the Rust side (see Tauri docs).
@@ -14,26 +14,23 @@ Make sure the SQL plugin is registered on the Rust side (see Tauri docs).
 
 ```ts
 import {
-  initDb,
-  db,
+  TauriORM,
   defineTable,
   integer,
   text,
   relations,
 } from "tauri-sqlite-orm";
 
-await initDb("sqlite:app.db");
+const db = new TauriORM("sqlite:app.db");
 
 export const users = defineTable("users", {
-  id: integer("id", { isPrimaryKey: true, autoIncrement: true }).primaryKey({
-    autoIncrement: true,
-  }),
+  id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   email: text("email"),
 });
 
 export const posts = defineTable("posts", {
-  id: integer("id", { isPrimaryKey: true }).primaryKey(),
+  id: integer("id").primaryKey(),
   content: text("content"),
   randomId: text("random_id").$defaultFn(() => crypto.randomUUID()),
   authorId: integer("author_id"),
@@ -77,9 +74,7 @@ import {
 type Data = { foo: string; bar: number };
 
 export const example = defineTable("example", {
-  id: integer("id", { isPrimaryKey: true, autoIncrement: true }).primaryKey({
-    autoIncrement: true,
-  }),
+  id: integer("id").primaryKey({ autoIncrement: true }),
   isActive: integer("is_active", { mode: "boolean" }),
   createdAt: integer("created_at", { mode: "timestamp" }).default(
     sql`(strftime('%s','now'))`
@@ -97,12 +92,25 @@ export const example = defineTable("example", {
 
 // Foreign key
 export const posts = defineTable("posts", {
-  id: integer("id", { isPrimaryKey: true }).primaryKey(),
+  id: integer("id").primaryKey(),
   userId: integer("user_id")
     .references(() => users.id, { onDelete: "cascade" })
     .notNull(),
 });
 ```
+
+### More data types and modes
+
+```ts
+// JSON stored in TEXT with proper SQLite JSON function support
+const cfg = defineTable("cfg", {
+  jsonText: text("json_text", { mode: "json" }).$type<{ foo: string }>(),
+  tsMs: integer("ts_ms", { mode: "timestamp_ms" }),
+  dataBuf: blob("data_buf", { mode: "buffer" }),
+});
+```
+
+Tip: Prefer `text(name, { mode: 'json' })` over `blob(name, { mode: 'json' })` to use SQLite JSON functions.
 
 ### Migrations
 
@@ -140,17 +148,38 @@ await db
 await db.delete(users).where(eq(users.id, 2)).execute();
 ```
 
+### Runtime defaults and onUpdate
+
+```ts
+import { defineTable, integer, text, increments } from "tauri-sqlite-orm";
+
+export const audit = defineTable("audit", {
+  id: increments("id"),
+  // Called on insert if value not provided
+  createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(
+    () => new Date()
+  ),
+  // Called on update when not explicitly set; if no default is provided, also used on insert
+  updatedAt: integer("updated_at", { mode: "timestamp" }).$onUpdateFn(
+    () => new Date()
+  ),
+  token: text("token").$default(() => crypto.randomUUID()),
+});
+```
+
 ### Query API (relations)
 
 Auto-generated with `db.configure(tables, relations?)`:
 
 ```ts
 // Flat relations with join
+import { asc } from "tauri-sqlite-orm";
+
 const usersWithPosts = await db.query.users.findMany({
   with: { posts: true },
   join: true,
-  where: { id: 1 },
-  orderBy: ["users.id ASC"],
+  where: (users, { eq }) => eq(users.id, 1),
+  orderBy: (users, { asc }) => [asc(users.id)],
   limit: 10,
   offset: 0,
   columns: { id: true, name: true },
@@ -165,11 +194,17 @@ const nested = await db.query.users.findMany({
     },
   },
 });
+
+// First row helper
+const firstUser = await db.query.users.findFirst({
+  where: (users, { eq }) => eq(users.id, 1),
+});
 ```
 
 Notes:
 
-- `where` accepts SQL helpers (eq, lt, gte, like) or object map.
+- `where` accepts SQL helpers (eq, lt, gte, like) or object map, or a callback `(table, ops) => SQL`.
+- `orderBy` accepts typed helpers or a callback `(table, { asc, desc }) => [...]`.
 - `columns` accepts string[] or object map of base table columns.
 - `join: true` only for one-level `with` (flat). Nested uses batched selects.
 
@@ -178,24 +213,26 @@ Notes:
 ```ts
 import { eq, ne, gt, gte, lt, lte, like, asc, desc } from "tauri-sqlite-orm";
 db.query.posts.findMany({
-  where: eq(posts.authorId, 1),
-  orderBy: [asc(posts.id)],
+  where: (posts, { eq }) => eq(posts.authorId, 1),
+  orderBy: (posts, { asc }) => [asc(posts.id)],
 });
 ```
 
 ### Nuxt + Tauri usage
 
-Initialize in a client plugin and ensure `initDb()` runs once:
+Initialize in a client plugin and ensure a single ORM instance is created:
 
 ```ts
 // plugins/orm.client.ts
-import { initDb, db } from "tauri-sqlite-orm";
+import { TauriORM } from "tauri-sqlite-orm";
 import { users, posts, usersRelations } from "@/lib/schema";
 
 export default defineNuxtPlugin(async () => {
-  await initDb("sqlite:app.db");
+  const db = new TauriORM("sqlite:app.db");
   db.configure({ users, posts }, { users: usersRelations });
   await db.migrateConfigured({ name: "init:users,posts" });
+
+  return { provide: { db } };
 });
 ```
 

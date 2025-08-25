@@ -30,6 +30,7 @@ export interface Column<T = any> {
   isNotNull?: boolean;
   defaultValue?: T | SQLExpression;
   defaultFn?: () => any;
+  onUpdateFn?: () => any;
   references?: {
     table: string;
     column: string;
@@ -47,12 +48,15 @@ export interface Column<T = any> {
 }
 
 // Helper functions to define columns, mimicking Drizzle
-type ColumnBuilder<T> = Column<T> & {
+export type ColumnBuilder<T> = Column<T> & {
   primaryKey: (opts?: { autoIncrement?: boolean }) => ColumnBuilder<T>;
   notNull: () => ColumnBuilder<T>;
   default: (value: T | SQLExpression) => ColumnBuilder<T>;
   $type: <U>() => ColumnBuilder<U>;
   $defaultFn: (fn: () => any) => ColumnBuilder<T>;
+  $default: (fn: () => any) => ColumnBuilder<T>;
+  $onUpdate: (fn: () => any) => ColumnBuilder<T>;
+  $onUpdateFn: (fn: () => any) => ColumnBuilder<T>;
   references: (
     target: () => Column<any>,
     actions?: { onDelete?: UpdateDeleteAction; onUpdate?: UpdateDeleteAction }
@@ -81,6 +85,18 @@ function createColumn<T>(
     col.defaultFn = fn;
     return col;
   };
+  col.$default = (fn: () => any) => {
+    col.defaultFn = fn;
+    return col;
+  };
+  col.$onUpdate = (fn: () => any) => {
+    col.onUpdateFn = fn;
+    return col;
+  };
+  col.$onUpdateFn = (fn: () => any) => {
+    col.onUpdateFn = fn;
+    return col;
+  };
   col.references = (
     target: () => Column<any>,
     actions?: { onDelete?: UpdateDeleteAction; onUpdate?: UpdateDeleteAction }
@@ -97,50 +113,92 @@ function createColumn<T>(
   return col as ColumnBuilder<T>;
 }
 
+// --- Column builders with name-optional overloads ---
+
+type TextConfig<TEnum extends string> = {
+  enum?: readonly TEnum[];
+  mode?: "json";
+};
 export function text<TEnum extends string>(
   name: string,
-  config?: { isPrimaryKey?: boolean; enum?: readonly TEnum[] }
+  config?: TextConfig<TEnum>
+): ColumnBuilder<TEnum extends string ? TEnum : string>;
+export function text<TEnum extends string>(
+  config?: TextConfig<TEnum>
+): ColumnBuilder<TEnum extends string ? TEnum : string>;
+export function text<TEnum extends string>(
+  nameOrConfig?: string | TextConfig<TEnum>,
+  maybeConfig?: TextConfig<TEnum>
 ): ColumnBuilder<TEnum extends string ? TEnum : string> {
+  const name = typeof nameOrConfig === "string" ? nameOrConfig : "";
+  const config = (
+    typeof nameOrConfig === "string" ? maybeConfig : nameOrConfig
+  ) as TextConfig<TEnum> | undefined;
   const col = createColumn<string>({
     name,
     type: "TEXT",
-    isPrimaryKey: config?.isPrimaryKey,
     _dataType: "" as string,
   });
   if (config?.enum) (col as any).enumValues = config.enum;
+  if (config?.mode) (col as any).mode = config.mode;
   return col as any;
 }
 
+export type IntegerMode = "number" | "boolean" | "timestamp" | "timestamp_ms";
 export function integer(
   name: string,
-  config?: {
-    isPrimaryKey?: boolean;
-    mode?: "number" | "boolean" | "timestamp";
-    autoIncrement?: boolean;
-  }
+  config?: { mode?: IntegerMode }
+): ColumnBuilder<number | boolean | Date>;
+export function integer(config?: {
+  mode?: IntegerMode;
+}): ColumnBuilder<number | boolean | Date>;
+export function integer(
+  nameOrConfig?: string | { mode?: IntegerMode },
+  maybeConfig?: { mode?: IntegerMode }
 ): ColumnBuilder<number | boolean | Date> {
+  const name = typeof nameOrConfig === "string" ? nameOrConfig : "";
+  const config = (
+    typeof nameOrConfig === "string" ? maybeConfig : nameOrConfig
+  ) as { mode?: IntegerMode } | undefined;
   let dt: any = 0 as number;
   if (config?.mode === "boolean") dt = false as boolean;
-  if (config?.mode === "timestamp") dt = new Date();
+  if (config?.mode === "timestamp" || config?.mode === "timestamp_ms")
+    dt = new Date();
   const col = createColumn<any>({
     name,
     type: "INTEGER",
-    isPrimaryKey: config?.isPrimaryKey,
-    autoIncrement: config?.autoIncrement,
     mode: config?.mode ?? "number",
     _dataType: dt,
   });
   return col as any;
 }
 
-export function real(name: string): ColumnBuilder<number> {
-  return createColumn<number>({ name, type: "REAL", _dataType: 0 as number });
+export function real(name: string): ColumnBuilder<number>;
+export function real(): ColumnBuilder<number>;
+export function real(name?: string): ColumnBuilder<number> {
+  return createColumn<number>({
+    name: name ?? "",
+    type: "REAL",
+    _dataType: 0 as number,
+  });
 }
 
+export type BlobMode = "json" | "bigint" | "buffer";
 export function blob(
   name: string,
-  config?: { mode?: "json" | "bigint" }
+  config?: { mode?: BlobMode }
+): ColumnBuilder<unknown | bigint | Uint8Array>;
+export function blob(config?: {
+  mode?: BlobMode;
+}): ColumnBuilder<unknown | bigint | Uint8Array>;
+export function blob(
+  nameOrConfig?: string | { mode?: BlobMode },
+  maybeConfig?: { mode?: BlobMode }
 ): ColumnBuilder<unknown | bigint | Uint8Array> {
+  const name = typeof nameOrConfig === "string" ? nameOrConfig : "";
+  const config = (
+    typeof nameOrConfig === "string" ? maybeConfig : nameOrConfig
+  ) as { mode?: BlobMode } | undefined;
   let dt: any = new Uint8Array();
   if (config?.mode === "bigint") dt = 0n as bigint;
   if (config?.mode === "json") dt = undefined as unknown;
@@ -152,10 +210,22 @@ export function blob(
   });
 }
 
+export type NumericMode = "string" | "number" | "bigint";
 export function numeric(
   name: string,
-  config?: { mode?: "string" | "number" | "bigint" }
+  config?: { mode?: NumericMode }
+): ColumnBuilder<string | number | bigint>;
+export function numeric(config?: {
+  mode?: NumericMode;
+}): ColumnBuilder<string | number | bigint>;
+export function numeric(
+  nameOrConfig?: string | { mode?: NumericMode },
+  maybeConfig?: { mode?: NumericMode }
 ): ColumnBuilder<string | number | bigint> {
+  const name = typeof nameOrConfig === "string" ? nameOrConfig : "";
+  const config = (
+    typeof nameOrConfig === "string" ? maybeConfig : nameOrConfig
+  ) as { mode?: NumericMode } | undefined;
   let dt: any = "" as string;
   if (config?.mode === "number") dt = 0 as number;
   if (config?.mode === "bigint") dt = 0n as bigint;
@@ -167,22 +237,36 @@ export function numeric(
   });
 }
 
-export const boolean = (name: string): ColumnBuilder<boolean> =>
-  createColumn<boolean>({
-    name,
+export function boolean(name: string): ColumnBuilder<boolean>;
+export function boolean(): ColumnBuilder<boolean>;
+export function boolean(name?: string): ColumnBuilder<boolean> {
+  return createColumn<boolean>({
+    name: name ?? "",
     type: "INTEGER",
     _dataType: false as boolean,
     mode: "boolean",
   });
+}
 
-// A slightly more complex type
-export const timestamp = (name: string): ColumnBuilder<Date> =>
-  createColumn<Date>({
-    name,
+export function timestamp(name: string): ColumnBuilder<Date>;
+export function timestamp(): ColumnBuilder<Date>;
+export function timestamp(name?: string): ColumnBuilder<Date> {
+  return createColumn<Date>({
+    name: name ?? "",
     type: "INTEGER",
     _dataType: new Date(),
     mode: "timestamp",
   });
+}
+
+// Sugar for INTEGER PRIMARY KEY AUTOINCREMENT
+export function increments(name: string): ColumnBuilder<number>;
+export function increments(): ColumnBuilder<number>;
+export function increments(name?: string): ColumnBuilder<number> {
+  return integer(name ?? "").primaryKey({
+    autoIncrement: true,
+  }) as unknown as ColumnBuilder<number>;
+}
 
 // Define a type for the schema object passed to defineTable
 type SchemaDefinition = Record<string, Column<any>>;
@@ -191,6 +275,10 @@ type SchemaDefinition = Record<string, Column<any>>;
 type InferModel<T extends SchemaDefinition> = {
   [K in keyof T]: T[K]["_dataType"];
 };
+
+type KeysMarkedPrimary<T extends SchemaDefinition> = {
+  [K in keyof T]: T[K] extends { isPrimaryKey: true } ? K : never;
+}[keyof T];
 
 // Our main table definition function
 export function defineTable<T extends SchemaDefinition>(
@@ -201,6 +289,7 @@ export function defineTable<T extends SchemaDefinition>(
   const finalizedSchema = { ...schema } as T;
   for (const key of Object.keys(finalizedSchema)) {
     const col = finalizedSchema[key as keyof T] as Column<any>;
+    if (!col.name || col.name === "") (col as Column<any>).name = key;
     (col as Column<any>).tableName = tableName;
   }
 
@@ -209,7 +298,7 @@ export function defineTable<T extends SchemaDefinition>(
     _schema: finalizedSchema,
     // The Drizzle-like type inference properties
     $inferSelect: {} as InferModel<T>,
-    $inferInsert: {} as Omit<InferModel<T>, "id">, // Example: omit 'id' for inserts
+    $inferInsert: {} as Omit<InferModel<T>, KeysMarkedPrimary<T>>, // omit PK columns
   };
 
   // Hoist columns onto the table object so you can do users.id
