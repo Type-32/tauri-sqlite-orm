@@ -21,6 +21,48 @@ import {
 type InferInsert<T> = T extends { $inferInsert: infer I } ? I : never;
 type InferSelect<T> = T extends { $inferSelect: infer S } ? S : never;
 
+// --- Query API types ---
+type WithSpec = Record<
+  string,
+  boolean | { with?: WithSpec; columns?: string[] }
+>;
+
+type FindManyOptions<TTable extends Table<any>> = {
+  with?: WithSpec;
+  join?: boolean;
+  columns?:
+    | (keyof InferSelect<TTable>)[]
+    | Record<keyof InferSelect<TTable>, boolean>;
+  where?:
+    | SQL
+    | Partial<InferSelect<TTable>>
+    | ((
+        table: TTable,
+        ops: {
+          eq: typeof eq;
+          ne: typeof ne;
+          gt: typeof gt;
+          gte: typeof gte;
+          lt: typeof lt;
+          lte: typeof lte;
+          like: typeof like;
+        }
+      ) => SQL);
+  orderBy?:
+    | (keyof InferSelect<TTable>)[]
+    | ((
+        table: TTable,
+        ops: { asc: typeof asc; desc: typeof desc }
+      ) => (string | SQL)[]);
+  limit?: number;
+  offset?: number;
+};
+
+type FindFirstOptions<TTable extends Table<any>> = Omit<
+  FindManyOptions<TTable>,
+  "limit" | "offset"
+>;
+
 function getTableName(table: Table<any>): string {
   const anyTable: any = table as any;
   return (anyTable._tableName ||
@@ -911,8 +953,12 @@ export class TauriORM {
   ): this & {
     query: {
       [K in keyof TTables]: {
-        findMany: (opts?: any) => Promise<Array<InferSelect<TTables[K]>>>;
-        findFirst: (opts?: any) => Promise<InferSelect<TTables[K]> | null>;
+        findMany: (
+          opts?: FindManyOptions<TTables[K]>
+        ) => Promise<Array<InferSelect<TTables[K]>>>;
+        findFirst: (
+          opts?: FindFirstOptions<TTables[K]>
+        ) => Promise<InferSelect<TTables[K]> | null>;
       };
     };
   } {
@@ -1299,12 +1345,6 @@ export function relations(
 }
 
 type RelationConfig = OneRelation | ManyRelation;
-
-// With-spec for nested relational queries and selective columns
-type WithSpec = Record<
-  string,
-  boolean | { with?: WithSpec; columns?: string[] }
->;
 
 function getPrimaryKey(table: Table<any>): Column<any> {
   const cols: Column[] = Object.values(table._schema);

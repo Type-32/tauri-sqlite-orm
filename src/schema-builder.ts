@@ -390,7 +390,7 @@ export function defineTable<T extends SchemaDefinition>(
   }
 
   const table: any = {
-    _tableName: tableName,
+    tableName: tableName,
     _schema: finalizedSchema,
     _constraints: [] as Array<
       UniqueSpec | PrimaryKeySpec | CheckSpec | ForeignKeySpec
