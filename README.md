@@ -1,8 +1,15 @@
-## tauri-sqlite-orm
+## Tauri SQLite ORM
 
-A Drizzle-like TypeScript ORM tailored for Tauri v2's `@tauri-apps/plugin-sql` (SQLite). Plug-and-play for Nuxt/Tauri apps: define schema in TS, run tracked migrations, and query with a soft-relations API.
+A Drizzle-like TypeScript ORM tailored for Tauri v2's `@tauri-apps/plugin-sql` (SQLite). It provides a simple, type-safe query builder and migration tools to help you manage your database with ease.
 
-### Install
+### Features
+
+- **Drizzle-like Schema:** Define your database schema using a familiar, chainable API.
+- **Type-Safe Query Builder:** Build SQL queries with TypeScript, ensuring type safety and autocompletion.
+- **Simplified Migrations:** Keep your database schema in sync with your application's models using automatic schema detection and migration tools.
+- **Lightweight & Performant:** Designed to be a thin layer over the Tauri SQL plugin, ensuring minimal overhead.
+
+### Installation
 
 ```bash
 bun add @type32/tauri-sqlite-orm @tauri-apps/plugin-sql
@@ -10,243 +17,155 @@ bun add @type32/tauri-sqlite-orm @tauri-apps/plugin-sql
 
 Make sure the SQL plugin is registered on the Rust side (see Tauri docs).
 
-### Quick start
+### Quick Start
 
-```ts
-import {
-  TauriORM,
-  defineTable,
-  integer,
-  text,
-  relations,
-} from "tauri-sqlite-orm";
+Here’s a quick example to get you started:
 
-const db = new TauriORM("sqlite:app.db");
+```typescript
+// src/db/schema.ts
+import { sqliteTable, text, integer } from "@type32/tauri-sqlite-orm";
 
-export const users = defineTable("users", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
+export const users = sqliteTable("users", {
+  id: integer("id").primaryKey().autoincrement(),
   name: text("name").notNull(),
-  email: text("email"),
+  email: text("email").unique(),
 });
 
-export const posts = defineTable("posts", {
+export const posts = sqliteTable("posts", {
   id: integer("id").primaryKey(),
   content: text("content"),
-  randomId: text("random_id").$defaultFn(() => crypto.randomUUID()),
-  authorId: integer("author_id"),
+  authorId: integer("author_id").references(() => users.id),
 });
 
-export const usersRelations = relations(users, ({ many }) => ({
-  posts: many(posts),
-}));
+// src/db/index.ts
+import { TauriORM } from "@type32/tauri-sqlite-orm";
+import Database from "@tauri-apps/plugin-sql";
+import * as schema from "./schema";
 
-db.configure({ users, posts }, { users: usersRelations });
-await db.migrateConfigured({ name: "init:users,posts" });
+// Load the database
+const dbInstance = await Database.load("sqlite:app.db");
 
-// Create
-await db
-  .insert(users)
-  .values({ name: "Dan", email: "dan@example.com" })
-  .execute();
+// Create the ORM instance
+export const db = new TauriORM(dbInstance, schema);
 
-// Query with relations (join-based when flat)
-const res = await db.query.users.findMany({
-  with: { posts: true },
-  join: true,
-});
+// Migrate the database if the schema has changed
+await db.migrateIfDirty();
+
+// Now you can use the ORM to interact with your database
+const newUser = await db
+  .insert(schema.users)
+  .values({ name: "John Doe", email: "john.doe@example.com" });
+const allUsers = await db.select(schema.users).execute();
 ```
 
 ### Documentation
 
-- See full docs in `docs/`:
-  - Getting Started: `docs/getting-started.md`
-  - Schema & Types: `docs/schema-and-types.md`
-  - Relations: `docs/relations.md`
-  - Queries (select): `docs/queries-select.md`
-  - CRUD (insert): `docs/crud-insert.md`
-  - CRUD (update): `docs/crud-update.md`
-  - CRUD (delete): `docs/crud-delete.md`
-  - SQL Helpers: `docs/sql-helpers.md`
-  - Indexes & Constraints: `docs/indexes-constraints.md`
-  - Migrations: `docs/migrations.md`
+- [Getting Started](docs/getting-started.md)
+- [Schema and Types](docs/schema-and-types.md)
+- [CRUD Operations (SELECT)](docs/queries-select.md)
+- [CRUD Operations (INSERT)](docs/crud-insert.md)
+- [CRUD Operations (UPDATE)](docs/crud-update.md)
+- [CRUD Operations (DELETE)](docs/crud-delete.md)
+- [Migrations](docs/migrations.md)
+- [Transactions](docs/transactions.md)
+- [Relations](docs/relations.md)
 
-### Schema builder
+### Schema Definition
 
-Chainable, Drizzle-style:
+Define your tables and columns using a chainable, Drizzle-style API.
 
-```ts
-import {
-  defineTable,
-  integer,
-  text,
-  real,
-  blob,
-  numeric,
-  sql,
-} from "tauri-sqlite-orm";
+```typescript
+import { sqliteTable, text, integer, boolean } from "@type32/tauri-sqlite-orm";
 
-type Data = { foo: string; bar: number };
-
-export const example = defineTable("example", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
-  isActive: integer("is_active", { mode: "boolean" }),
-  createdAt: integer("created_at", { mode: "timestamp" }).default(
-    sql`(strftime('%s','now'))`
-  ),
-  rating: real("rating"),
-  status: text("status", { enum: ["active", "inactive"] as const }),
-  name: text("name").notNull().default("Anonymous"),
-  data: blob("data"),
-  jsonField: blob("json_field", { mode: "json" }).$type<Data>(),
-  bigCounter: blob("big_counter", { mode: "bigint" }),
-  valueNumeric: numeric("value_numeric"),
-  valueNumericNum: numeric("value_numeric_num", { mode: "number" }),
-  valueNumericBig: numeric("value_numeric_big", { mode: "bigint" }),
-});
-
-// Foreign key
-export const posts = defineTable("posts", {
-  id: integer("id").primaryKey(),
-  userId: integer("user_id")
-    .references(() => users.id, { onDelete: "cascade" })
-    .notNull(),
-});
-```
-
-### More data types and modes
-
-```ts
-// JSON stored in TEXT with proper SQLite JSON function support
-const cfg = defineTable("cfg", {
-  jsonText: text("json_text", { mode: "json" }).$type<{ foo: string }>(),
-  tsMs: integer("ts_ms", { mode: "timestamp_ms" }),
-  dataBuf: blob("data_buf", { mode: "buffer" }),
-});
-```
-
-Tip: Prefer `text(name, { mode: 'json' })` over `blob(name, { mode: 'json' })` to use SQLite JSON functions.
-
-### Migrations
-
-Tracked simple migrations are part of the ORM instance:
-
-```ts
-// one-off for specific tables
-await db.migrate([users, posts], { name: "init:users,posts" });
-
-// or using configured schema
-await db.migrateConfigured({ name: "init:users,posts" });
-```
-
-DDL emitted respects: primaryKey + autoIncrement, notNull, default(value or sql), references (with onDelete/onUpdate).
-
-### CRUD (Drizzle-like builders)
-
-```ts
-// Insert
-await db.insert(users).values({ name: "Alice" }).execute();
-await db
-  .insert(users)
-  .values([{ name: "A" }, { name: "B" }])
-  .execute();
-
-// Update
-import { eq } from "tauri-sqlite-orm";
-await db
-  .update(users)
-  .set({ email: "new@mail.com" })
-  .where(eq(users.id, 1))
-  .execute();
-
-// Delete
-await db.delete(users).where(eq(users.id, 2)).execute();
-```
-
-### Runtime defaults and onUpdate
-
-```ts
-import { defineTable, integer, text, increments } from "tauri-sqlite-orm";
-
-export const audit = defineTable("audit", {
-  id: increments("id"),
-  // Called on insert if value not provided
+export const users = sqliteTable("users", {
+  id: integer("id").primaryKey().autoincrement(),
+  name: text("name").notNull(),
+  email: text("email").unique(),
+  isActive: boolean("is_active").default(true),
   createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(
     () => new Date()
   ),
-  // Called on update when not explicitly set; if no default is provided, also used on insert
-  updatedAt: integer("updated_at", { mode: "timestamp" }).$onUpdateFn(
-    () => new Date()
-  ),
-  token: text("token").$default(() => crypto.randomUUID()),
 });
 ```
 
-### Query API (relations)
+### CRUD Operations
 
-Auto-generated with `db.configure(tables, relations?)`:
+Perform `CREATE`, `READ`, `UPDATE`, and `DELETE` operations using a type-safe query builder.
 
-```ts
-// Flat relations with join
-import { asc } from "tauri-sqlite-orm";
+**SELECT**
 
-const usersWithPosts = await db.query.users.findMany({
-  with: { posts: true },
-  join: true,
-  where: (users, { eq }) => eq(users.id, 1),
-  orderBy: (users, { asc }) => [asc(users.id)],
-  limit: 10,
-  offset: 0,
-  columns: { id: true, name: true },
-});
+```typescript
+import { eq, and } from "@type32/tauri-sqlite-orm";
 
-// Nested relations (batched loader)
-const nested = await db.query.users.findMany({
-  with: {
-    posts: {
-      with: { comments: true },
-      columns: ["id", "content"],
-    },
-  },
-});
+// Select all users
+const allUsers = await db.select(users).execute();
 
-// First row helper
-const firstUser = await db.query.users.findFirst({
-  where: (users, { eq }) => eq(users.id, 1),
-});
+// Select specific columns
+const userNames = await db.select(users, ["name"]).execute();
+
+// Use WHERE conditions
+const activeUsers = await db
+  .select(users)
+  .where(eq(users.isActive, true))
+  .execute();
 ```
 
-Notes:
+**INSERT**
 
-- `where` accepts SQL helpers (eq, lt, gte, like) or object map, or a callback `(table, ops) => SQL`.
-- `orderBy` accepts typed helpers or a callback `(table, { asc, desc }) => [...]`.
-- `columns` accepts string[] or object map of base table columns.
-- `join: true` only for one-level `with` (flat). Nested uses batched selects.
+```typescript
+// Insert a single user
+const newUser = await db
+  .insert(users)
+  .values({ name: "Jane Doe", email: "jane.doe@example.com" });
 
-### SQL helpers
-
-```ts
-import { eq, ne, gt, gte, lt, lte, like, asc, desc } from "tauri-sqlite-orm";
-db.query.posts.findMany({
-  where: (posts, { eq }) => eq(posts.authorId, 1),
-  orderBy: (posts, { asc }) => [asc(posts.id)],
-});
+// Insert multiple users
+await db.insert(users).values([
+  { name: "Alice", email: "alice@example.com" },
+  { name: "Bob", email: "bob@example.com" },
+]);
 ```
 
-### Nuxt + Tauri usage
+**UPDATE**
 
-Initialize in a client plugin and ensure a single ORM instance is created:
+```typescript
+import { eq } from "@type32/tauri-sqlite-orm";
 
-```ts
-// plugins/orm.client.ts
-import { TauriORM } from "tauri-sqlite-orm";
-import { users, posts, usersRelations } from "@/lib/schema";
+// Update a user's email
+await db
+  .update(users)
+  .set({ email: "new.email@example.com" })
+  .where(eq(users.id, 1));
+```
 
-export default defineNuxtPlugin(async () => {
-  const db = new TauriORM("sqlite:app.db");
-  db.configure({ users, posts }, { users: usersRelations });
-  await db.migrateConfigured({ name: "init:users,posts" });
+**DELETE**
 
-  return { provide: { db } };
+```typescript
+import { eq } from "@type32/tauri-sqlite-orm";
+
+// Delete a user
+await db.delete(users).where(eq(users.id, 1));
+```
+
+### Migrations
+
+The ORM includes a simple migration system that automatically detects schema changes and applies them to the database.
+
+```typescript
+// This will check if the schema has changed and run migrations if it has
+await db.migrateIfDirty();
+
+// You can also run migrations manually
+await db.migrate();
+```
+
+### Transactions
+
+Run multiple database operations within a transaction to ensure atomicity.
+
+```typescript
+await db.transaction(async (tx) => {
+  await tx.insert(users).values({ name: "From Transaction" });
+  await tx.delete(users).where(eq(users.id, 1));
 });
 ```
 

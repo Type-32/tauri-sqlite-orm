@@ -1,35 +1,38 @@
 ## Migrations
 
-Integrated on the ORM instance.
+The ORM provides a straightforward way to keep your database schema in sync with your application's schema definition.
 
-### Configure and migrate
+### Automatic Migrations with `migrateIfDirty`
 
-```ts
-db.configure({ users, posts }, { users: usersRelations });
-await db.migrateConfigured({ name: "init:users,posts" });
-Note:
+The recommended way to handle migrations is to use the `migrateIfDirty()` method when you initialize the ORM. This method automatically detects changes in your schema and applies them.
 
-- `migrateConfigured` always applies the configured schema (idempotent). If you prefer to only apply changes when your schema has changed, call `migrateIfDirty()` instead.
+1.  **Schema Signature:** The ORM computes a "signature" of your schema definition (tables, columns, types, constraints).
+2.  **Comparison:** It compares this signature to the one stored in a special `_schema_meta` table in your database.
+3.  **Migration:** If the signatures don't match (meaning your schema has changed), it runs the necessary `CREATE TABLE` statements to align the database with your schema.
+4.  **Signature Update:** After a successful migration, it updates the stored signature to the new one.
 
+**Usage:**
+
+```typescript
+// src/db/index.ts
+import { TauriORM } from "@type32/tauri-sqlite-orm";
+import Database from "@tauri-apps/plugin-sql";
+import * as schema from "./schema";
+
+const dbInstance = await Database.load("sqlite:app.db");
+export const db = new TauriORM(dbInstance, schema);
+
+// This will automatically run migrations on startup if needed
+await db.migrateIfDirty();
 ```
 
-### Force push and schema diff
+### Manual Migrations with `migrate`
 
-```ts
-await db.forcePush({ preserveData: true });
-const diff = await db.diffSchema();
+If you prefer to run migrations manually, you can use the `migrate()` method. This will attempt to create all the tables defined in your schema without checking for changes first. It uses `CREATE TABLE IF NOT EXISTS`, so it's safe to run multiple times.
+
+```typescript
+// Manually run migrations to ensure all tables exist
+await db.migrate();
 ```
 
-### Dirty-check migration
-
-```ts
-const changed = await db.migrateIfDirty();
-
-### Behavior details
-
-- `migrateConfigured` now enforces the configured schema using a safe force-push (adds missing tables/columns, rebuilds incompatible tables preserving shared columns) and records the current schema signature for future dirty checks.
-- `migrateIfDirty` computes a normalized schema signature and, if different, safely applies schema changes (same force-push strategy) and updates the stored signature. This means schema changes are actually applied, not just recorded.
-- Foreign keys are enabled automatically via `PRAGMA foreign_keys=ON` when the DB loads.
-- Table-level constraints declared via `defineTable(..., extras => [...])` are emitted in `CREATE TABLE` (PRIMARY KEY, UNIQUE, CHECK, FOREIGN KEY).
-- Indexes declared with `index/uniqueIndex` are created automatically after table creation and after rebuilds.
-```
+This approach is simpler but less efficient, as it doesn't track schema changes. It's generally better to use `migrateIfDirty()` for most use cases.

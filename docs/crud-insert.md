@@ -1,41 +1,33 @@
-## CRUD: Insert
+## INSERT Operations
 
-### Basic
+This guide covers how to insert new records into your database tables.
 
-```ts
-await db.insert(users).values({ name: "Dan" }).execute();
-await db
-  .insert(users)
-  .values([{ name: "A" }, { name: "B" }])
-  .execute();
+### Basic INSERT
+
+To insert a single record, use the `db.insert()` method, followed by `.values()` with the data object.
+
+```typescript
+import { db } from "./db";
+import { users } from "./db/schema";
+
+// Insert a single user
+const result = await db.insert(users).values({
+  name: "John Doe",
+  email: "john.doe@example.com",
+});
+
+// The `execute` method returns the last inserted ID
+console.log("Inserted user with ID:", result);
 ```
 
-### Returning (SQLite)
+### Inserting Multiple Records
 
-```ts
-await db.insert(users).values({ name: "Dan" }).returning({ id: users.id });
-await db.insert(users).values({ name: "Dan" }).$returningId();
-```
+You can insert multiple records at once by passing an array of objects to the `.values()` method.
 
-### Conflicts (SQLite)
-
-```ts
-await db.insert(users).values({ id: 1, name: "John" }).onConflictDoNothing();
-await db
-  .insert(users)
-  .values({ id: 1, name: "Dan" })
-  .onConflictDoUpdate({ target: users.id, set: { name: raw`excluded.name` } });
-```
-
-### Insert … select
-
-```ts
-await db
-  .insert(employees)
-  .select(
-    db
-      .select({ name: users.name })
-      .from(users)
-      .where(eq(users.role, "employee"))
-  );
+```typescript
+// Insert multiple users in a single query
+await db.insert(users).values([
+  { name: "Alice", email: "alice@example.com" },
+  { name: "Bob", email: "bob@example.com" },
+]);
 ```
