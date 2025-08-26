@@ -336,17 +336,30 @@ export class TauriORM {
             string,
             Column<any>
           >;
+          function coerceValue(col: Column<any> | undefined, value: any) {
+            if (col && (col as any).mode === "boolean") {
+              return value ? 1 : 0;
+            }
+            if (value instanceof Date) {
+              if (col && (col as any).mode === "timestamp_ms")
+                return value.getTime();
+              if (col && (col as any).mode === "timestamp")
+                return Math.floor(value.getTime() / 1000);
+            }
+            return value;
+          }
           for (const [key, col] of Object.entries(schema)) {
             if (finalData[key] === undefined) {
               if ((col as any).defaultFn) {
-                finalData[key] = (col as any).defaultFn!();
+                finalData[key] = coerceValue(col, (col as any).defaultFn!());
               } else if ((col as any).onUpdateFn) {
-                finalData[key] = (col as any).onUpdateFn!();
+                finalData[key] = coerceValue(col, (col as any).onUpdateFn!());
               }
             }
           }
-          const keys = Object.keys(finalData);
-          const values = Object.values(finalData);
+          const entries = Object.entries(finalData);
+          const keys = entries.map(([k]) => schema[k]?.name ?? k);
+          const values = entries.map(([k, v]) => coerceValue(schema[k], v));
           const placeholders = values.map(() => "?").join(", ");
           let query = `INSERT INTO ${
             (this._table as any)._tableName
@@ -474,7 +487,15 @@ export class TauriORM {
         // Apply onUpdateFn for columns not explicitly set
         for (const [key, col] of Object.entries(schema)) {
           if (!(key in dataToSet) && (col as any).onUpdateFn) {
-            dataToSet[key] = (col as any).onUpdateFn!();
+            const v = (col as any).onUpdateFn!();
+            if ((col as any).mode === "boolean") dataToSet[key] = v ? 1 : 0;
+            else if (v instanceof Date) {
+              if ((col as any).mode === "timestamp_ms")
+                dataToSet[key] = v.getTime();
+              else if ((col as any).mode === "timestamp")
+                dataToSet[key] = Math.floor(v.getTime() / 1000);
+              else dataToSet[key] = v;
+            } else dataToSet[key] = v;
           }
         }
         // Build SET with SQL support and undefined filtering
@@ -488,11 +509,22 @@ export class TauriORM {
             typeof (v as any).toSQL === "function"
           ) {
             const s = (v as SQL).toSQL();
-            setParts.push(`${k} = ${s.clause}`);
+            const colName = schema[k]?.name ?? k;
+            setParts.push(`${colName} = ${s.clause}`);
             bindings.push(...s.bindings);
           } else {
-            setParts.push(`${k} = ?`);
-            bindings.push(v);
+            const colName = schema[k]?.name ?? k;
+            let val: any = v;
+            const col = schema[k];
+            if (col && (col as any).mode === "boolean") val = v ? 1 : 0;
+            else if (v instanceof Date) {
+              if (col && (col as any).mode === "timestamp_ms")
+                val = v.getTime();
+              else if (col && (col as any).mode === "timestamp")
+                val = Math.floor(v.getTime() / 1000);
+            }
+            setParts.push(`${colName} = ?`);
+            bindings.push(val);
           }
         }
         let query = `UPDATE ${
@@ -508,7 +540,7 @@ export class TauriORM {
             const entries = Object.entries(this._where as Record<string, any>);
             if (entries.length > 0) {
               query += ` WHERE ${entries
-                .map(([k]) => `${k} = ?`)
+                .map(([k]) => `${schema[k]?.name ?? k} = ?`)
                 .join(" AND ")}`;
               bindings.push(...entries.map(([, v]) => v));
             }
@@ -589,8 +621,12 @@ export class TauriORM {
           } else {
             const entries = Object.entries(this._where as Record<string, any>);
             if (entries.length > 0) {
+              const schema = (this._table as any)._schema as Record<
+                string,
+                Column<any>
+              >;
               query += ` WHERE ${entries
-                .map(([k]) => `${k} = ?`)
+                .map(([k]) => `${schema[k]?.name ?? k} = ?`)
                 .join(" AND ")}`;
               bindings.push(...entries.map(([, v]) => v));
             }

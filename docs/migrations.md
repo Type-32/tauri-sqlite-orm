@@ -7,6 +7,10 @@ Integrated on the ORM instance.
 ```ts
 db.configure({ users, posts }, { users: usersRelations });
 await db.migrateConfigured({ name: "init:users,posts" });
+Note:
+
+- `migrateConfigured` always applies the configured schema (idempotent). If you prefer to only apply changes when your schema has changed, call `migrateIfDirty()` instead.
+
 ```
 
 ### Force push and schema diff
