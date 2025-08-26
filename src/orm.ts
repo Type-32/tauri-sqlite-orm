@@ -126,6 +126,12 @@ class SelectQueryBuilder<T> {
     }
 
     const db = await this._dbProvider();
+    const baseTableName =
+      (this._table as any)._tableName || (this._table as any).tableName;
+    if (!baseTableName)
+      throw new Error(
+        "Invalid table passed to select.from(): missing _tableName"
+      );
     const bindings: any[] = [];
     const selectList =
       this._selectedColumns.length > 0
@@ -133,11 +139,11 @@ class SelectQueryBuilder<T> {
             .map((c) => (c.alias ? `${c.sql} AS ${c.alias}` : c.sql))
             .join(", ")
         : (Object.values(this._table._schema) as Column<any>[])
-            .map((c) => `${this._table!._tableName}.${c.name}`)
+            .map((c) => `${baseTableName}.${c.name}`)
             .join(", ");
     let query = `SELECT ${
       this._distinct ? "DISTINCT " : ""
-    }${selectList} FROM ${this._table._tableName}`;
+    }${selectList} FROM ${baseTableName}`;
 
     if (this._joins.length > 0) query += ` ${this._joins.join(" ")}`;
 
@@ -318,12 +324,18 @@ export class TauriORM {
       }
       async execute() {
         const db = await self.getDb();
+        const tableName =
+          (this._table as any)._tableName || (this._table as any).tableName;
+        if (!tableName)
+          throw new Error(
+            "Invalid table passed to insert(): missing _tableName"
+          );
         // INSERT ... SELECT path
         if (this._selectSql) {
           const cols = Object.keys((this._table as any)._schema);
-          let query = `INSERT INTO ${
-            (this._table as any)._tableName
-          } (${cols.join(", ")}) ${this._selectSql.clause}`;
+          let query = `INSERT INTO ${tableName} (${cols.join(", ")}) ${
+            this._selectSql.clause
+          }`;
           const bindings = [...this._selectSql.bindings];
           query += this._buildConflictClause();
           const ret = await this._executeWithReturning(db, query, bindings);
@@ -361,9 +373,9 @@ export class TauriORM {
           const keys = entries.map(([k]) => schema[k]?.name ?? k);
           const values = entries.map(([k, v]) => coerceValue(schema[k], v));
           const placeholders = values.map(() => "?").join(", ");
-          let query = `INSERT INTO ${
-            (this._table as any)._tableName
-          } (${keys.join(", ")}) VALUES (${placeholders})`;
+          let query = `INSERT INTO ${tableName} (${keys.join(
+            ", "
+          )}) VALUES (${placeholders})`;
           const bindings: any[] = [...values];
           query += this._buildConflictClause();
           const ret = await this._executeWithReturning(db, query, bindings);
@@ -479,6 +491,12 @@ export class TauriORM {
         if (!this._data)
           throw new Error("Update requires set() before execute()");
         const db = await self.getDb();
+        const tableName =
+          (this._table as any)._tableName || (this._table as any).tableName;
+        if (!tableName)
+          throw new Error(
+            "Invalid table passed to update(): missing _tableName"
+          );
         const schema = (this._table as any)._schema as Record<
           string,
           Column<any>
@@ -527,9 +545,7 @@ export class TauriORM {
             bindings.push(val);
           }
         }
-        let query = `UPDATE ${
-          (this._table as any)._tableName
-        } SET ${setParts.join(", ")}`;
+        let query = `UPDATE ${tableName} SET ${setParts.join(", ")}`;
         if (this._from) query += ` FROM ${this._from._tableName}`;
         if (this._where) {
           if (typeof (this._where as any).toSQL === "function") {
@@ -611,7 +627,13 @@ export class TauriORM {
       }
       async execute() {
         const db = await self.getDb();
-        let query = `DELETE FROM ${(this._table as any)._tableName}`;
+        const tableName =
+          (this._table as any)._tableName || (this._table as any).tableName;
+        if (!tableName)
+          throw new Error(
+            "Invalid table passed to delete(): missing _tableName"
+          );
+        let query = `DELETE FROM ${tableName}`;
         const bindings: any[] = [];
         if (this._where) {
           if (typeof (this._where as any).toSQL === "function") {
