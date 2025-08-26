@@ -628,6 +628,31 @@ export class TauriORM {
 
   // --- Migrations API ---
 
+  private formatDefaultValue(col: Column<any>): string | null {
+    const dv: any = col.defaultValue as any;
+    if (dv === undefined) return null;
+    // raw SQL expression
+    if (dv && typeof dv === "object" && "raw" in dv) {
+      return (dv as any).raw as string;
+    }
+    // Date handling for timestamp modes
+    if (dv instanceof Date) {
+      const isMs = (col as any).mode === "timestamp_ms";
+      const num = isMs ? dv.getTime() : Math.floor(dv.getTime() / 1000);
+      return String(num);
+    }
+    // boolean handling stored as INTEGER 0/1
+    if ((col as any).mode === "boolean") {
+      return String(dv ? 1 : 0);
+    }
+    // string literal
+    if (typeof dv === "string") {
+      return `'${dv.replace(/'/g, "''")}'`;
+    }
+    // number/bigint or other primitives
+    return String(dv);
+  }
+
   private generateCreateTableSql(table: Table<any>): string {
     const tableName = table._tableName;
     const columns: Column<any>[] = Object.values(table._schema);
@@ -640,14 +665,8 @@ export class TauriORM {
       }
       if (col.isNotNull) def += " NOT NULL";
       if (col.defaultValue !== undefined) {
-        const dv: any = col.defaultValue as any;
-        if (dv && typeof dv === "object" && "raw" in dv) {
-          def += ` DEFAULT ${dv.raw}`;
-        } else if (typeof dv === "string") {
-          def += ` DEFAULT '${dv.replace(/'/g, "''")}'`;
-        } else {
-          def += ` DEFAULT ${dv}`;
-        }
+        const formatted = this.formatDefaultValue(col);
+        if (formatted !== null) def += ` DEFAULT ${formatted}`;
       }
       // defaultFn is applied at insert-time; not encoded in DDL
       if (col.references && !col.isPrimaryKey) {
@@ -1028,12 +1047,8 @@ export class TauriORM {
           let clause = `${m.name} ${m.type}`;
           if (m.isNotNull) clause += " NOT NULL";
           if (m.defaultValue !== undefined) {
-            const dv: any = m.defaultValue as any;
-            if (dv && typeof dv === "object" && "raw" in dv)
-              clause += ` DEFAULT ${dv.raw}`;
-            else if (typeof dv === "string")
-              clause += ` DEFAULT '${dv.replace(/'/g, "''")}'`;
-            else clause += ` DEFAULT ${dv}`;
+            const formatted = this.formatDefaultValue(m);
+            if (formatted !== null) clause += ` DEFAULT ${formatted}`;
           }
           await this.run(`ALTER TABLE ${tableName} ADD COLUMN ${clause}`);
         }
