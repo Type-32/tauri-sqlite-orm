@@ -11,17 +11,23 @@ import {
   lt,
   lte,
   like,
+  and,
+  or,
+  not,
+  getQualifiedName,
 } from "./sql-helpers";
 
 class SelectQueryBuilder<T> {
   private _table: Table<any> | null = null;
-  private _selectedColumns: string[] = ["*"];
+  private _selectedColumns: Array<{ sql: string; alias?: string }> = [];
   private _joins: string[] = [];
   private _where: SQL[] = [];
-  private _orderBy: string[] = [];
+  private _orderBy: Array<string | SQL> = [];
   private _limit: number | null = null;
   private _offset: number | null = null;
-  private _eager: Record<string, RelationConfig> = {};
+  private _groupBy: string[] = [];
+  private _having: SQL[] = [];
+  private _distinct: boolean = false;
   private _dbProvider: () => Promise<Database>;
 
   constructor(
@@ -30,8 +36,32 @@ class SelectQueryBuilder<T> {
   ) {
     this._dbProvider = dbProvider;
     if (fields) {
-      this._selectedColumns = Object.values(fields).map((c) => c.name);
+      for (const [alias, col] of Object.entries(fields)) {
+        const sql = getQualifiedName(col);
+        this._selectedColumns.push({ sql, alias });
+      }
     }
+  }
+
+  distinct(): this {
+    this._distinct = true;
+    return this;
+  }
+
+  select(fields: Record<string, Column<any> | SQL>): this {
+    this._selectedColumns = [];
+    for (const [alias, expr] of Object.entries(fields)) {
+      if (typeof (expr as any).toSQL === "function") {
+        const s = (expr as SQL).toSQL();
+        this._selectedColumns.push({ sql: s.clause, alias });
+      } else {
+        this._selectedColumns.push({
+          sql: getQualifiedName(expr as Column),
+          alias,
+        });
+      }
+    }
+    return this;
   }
 
   from(table: Table<any>): this {
@@ -39,21 +69,40 @@ class SelectQueryBuilder<T> {
     return this;
   }
 
-  where(...conditions: SQL[]): this {
-    this._where.push(...conditions);
+  where(...conditions: (SQL | undefined)[]): this {
+    this._where.push(...(conditions.filter(Boolean) as SQL[]));
     return this;
   }
 
   leftJoin(otherTable: Table<any>, on: SQL): this {
     const onSql = on.toSQL();
-    // For joins, we assume no bindings in the ON clause (col = col)
     const joinClause = `LEFT JOIN ${otherTable._tableName} ON ${onSql.clause}`;
     this._joins.push(joinClause);
     return this;
   }
 
-  orderBy(...clauses: string[]): this {
-    this._orderBy.push(...clauses);
+  groupBy(...exprs: (Column | string)[]): this {
+    for (const e of exprs) {
+      if (!e) continue;
+      if (typeof e === "string") this._groupBy.push(e);
+      else this._groupBy.push(getQualifiedName(e));
+    }
+    return this;
+  }
+
+  having(...conditions: SQL[]): this {
+    this._having.push(...conditions);
+    return this;
+  }
+
+  orderBy(...clauses: (string | Column<any> | SQL)[]): this {
+    for (const c of clauses) {
+      if (!c) continue;
+      if (typeof c === "string") this._orderBy.push(c);
+      else if (typeof (c as any).toSQL === "function")
+        this._orderBy.push(c as SQL);
+      else this._orderBy.push(getQualifiedName(c as Column));
+    }
     return this;
   }
 
@@ -67,7 +116,6 @@ class SelectQueryBuilder<T> {
     return this;
   }
 
-  // The final execution step
   async execute(): Promise<T[]> {
     if (!this._table) {
       throw new Error("Cannot execute select query without a 'from' table.");
@@ -75,16 +123,20 @@ class SelectQueryBuilder<T> {
 
     const db = await this._dbProvider();
     const bindings: any[] = [];
-    let query = `SELECT ${this._selectedColumns.join(", ")} FROM ${
-      this._table._tableName
-    }`;
+    const selectList =
+      this._selectedColumns.length > 0
+        ? this._selectedColumns
+            .map((c) => (c.alias ? `${c.sql} AS ${c.alias}` : c.sql))
+            .join(", ")
+        : (Object.values(this._table._schema) as Column<any>[])
+            .map((c) => `${this._table!._tableName}.${c.name}`)
+            .join(", ");
+    let query = `SELECT ${
+      this._distinct ? "DISTINCT " : ""
+    }${selectList} FROM ${this._table._tableName}`;
 
-    // Add Joins
-    if (this._joins.length > 0) {
-      query += ` ${this._joins.join(" ")}`;
-    }
+    if (this._joins.length > 0) query += ` ${this._joins.join(" ")}`;
 
-    // Add Where Clauses
     if (this._where.length > 0) {
       const whereClauses = this._where.map((condition) => {
         const sql = condition.toSQL();
@@ -94,28 +146,52 @@ class SelectQueryBuilder<T> {
       query += ` WHERE ${whereClauses.join(" AND ")}`;
     }
 
-    // Add Order By
-    if (this._orderBy.length > 0) {
-      query += ` ORDER BY ${this._orderBy.join(", ")}`;
+    if (this._groupBy.length > 0) {
+      query += ` GROUP BY ${this._groupBy.join(", ")}`;
     }
 
-    // Add Limit
+    if (this._having.length > 0) {
+      const havingClauses = this._having.map((h) => {
+        const sql = h.toSQL();
+        bindings.push(...sql.bindings);
+        return `(${sql.clause})`;
+      });
+      query += ` HAVING ${havingClauses.join(" AND ")}`;
+    }
+
+    if (this._orderBy.length > 0) {
+      const ordParts: string[] = [];
+      for (const ob of this._orderBy) {
+        if (typeof ob === "string") ordParts.push(ob);
+        else {
+          const s = (ob as SQL).toSQL();
+          ordParts.push(s.clause);
+          bindings.push(...s.bindings);
+        }
+      }
+      query += ` ORDER BY ${ordParts.join(", ")}`;
+    }
+
     if (this._limit !== null) {
       query += ` LIMIT ?`;
       bindings.push(this._limit);
     }
 
-    // Add Offset
     if (this._offset !== null) {
-      // LIMIT must be present for OFFSET to work in SQLite
-      if (this._limit === null) {
-        query += ` LIMIT -1`; // SQLite convention for no limit
-      }
+      if (this._limit === null) query += ` LIMIT -1`;
       query += ` OFFSET ?`;
       bindings.push(this._offset);
     }
 
     return db.select<T[]>(query, bindings);
+  }
+
+  async iterator(): Promise<AsyncIterableIterator<T>> {
+    const rows = await this.execute();
+    async function* gen() {
+      for (const r of rows) yield r as T;
+    }
+    return gen();
   }
 }
 
@@ -147,6 +223,13 @@ export class TauriORM {
   select<T>(fields?: Record<string, Column<any>>): SelectQueryBuilder<T> {
     return new SelectQueryBuilder<T>(this.getDb.bind(this), fields);
   }
+  selectDistinct<T>(
+    fields?: Record<string, Column<any>>
+  ): SelectQueryBuilder<T> {
+    const qb = new SelectQueryBuilder<T>(this.getDb.bind(this), fields);
+    qb.distinct();
+    return qb;
+  }
 
   // --- Drizzle-style CRUD builders ---
   insert(table: Table<any>) {
@@ -154,12 +237,85 @@ export class TauriORM {
     return new (class InsertBuilder {
       _table = table;
       _rows: Record<string, any>[] = [];
+      _selectSql: { clause: string; bindings: any[] } | null = null;
+      _conflict:
+        | null
+        | { kind: "doNothing"; target?: string | string[]; where?: SQL }
+        | {
+            kind: "doUpdate";
+            target: string | string[];
+            targetWhere?: SQL;
+            set: Record<string, any>;
+            setWhere?: SQL;
+          } = null;
+      _returning: null | "__RETURNING_ID__" | Record<string, Column<any>> =
+        null;
       values(rowOrRows: Record<string, any> | Record<string, any>[]) {
         this._rows = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
         return this;
       }
+      select(qb: { toSQL?: () => { clause: string; bindings: any[] } } | SQL) {
+        if ((qb as any).toSQL) this._selectSql = (qb as any).toSQL();
+        else this._selectSql = (qb as SQL).toSQL();
+        return this;
+      }
+      returning(fields?: Record<string, Column<any>>) {
+        this._returning = fields ?? {};
+        return this as any;
+      }
+      $returningId() {
+        // For SQLite, last_insert_rowid() for single row; for multiple rows, return empty objects
+        this._returning = "__RETURNING_ID__";
+        return this as any;
+      }
+      onConflictDoNothing(opts?: {
+        target?: Column<any> | Column<any>[];
+        where?: SQL;
+      }) {
+        const target = opts?.target
+          ? Array.isArray(opts.target)
+            ? opts.target.map((c) => c.name)
+            : (opts.target as Column).name
+          : undefined;
+        this._conflict = {
+          kind: "doNothing",
+          target,
+          where: opts?.where,
+        };
+        return this;
+      }
+      onConflictDoUpdate(opts: {
+        target: Column<any> | Column<any>[];
+        targetWhere?: SQL;
+        set: Record<string, any>;
+        setWhere?: SQL;
+      }) {
+        const target = Array.isArray(opts.target)
+          ? opts.target.map((c) => c.name)
+          : (opts.target as Column).name;
+        this._conflict = {
+          kind: "doUpdate",
+          target,
+          targetWhere: opts.targetWhere,
+          set: opts.set,
+          setWhere: opts.setWhere,
+        };
+        return this;
+      }
       async execute() {
         const db = await self.getDb();
+        // INSERT ... SELECT path
+        if (this._selectSql) {
+          const cols = Object.keys((this._table as any)._schema);
+          let query = `INSERT INTO ${
+            (this._table as any)._tableName
+          } (${cols.join(", ")}) ${this._selectSql.clause}`;
+          const bindings = [...this._selectSql.bindings];
+          query += this._buildConflictClause();
+          const ret = await this._executeWithReturning(db, query, bindings);
+          return ret;
+        }
+        // VALUES path
         for (const data of this._rows) {
           const finalData: Record<string, any> = { ...data };
           const schema = (this._table as any)._schema as Record<
@@ -171,7 +327,6 @@ export class TauriORM {
               if ((col as any).defaultFn) {
                 finalData[key] = (col as any).defaultFn!();
               } else if ((col as any).onUpdateFn) {
-                // If no default provided but onUpdateFn exists, drizzle applies on insert too.
                 finalData[key] = (col as any).onUpdateFn!();
               }
             }
@@ -179,11 +334,76 @@ export class TauriORM {
           const keys = Object.keys(finalData);
           const values = Object.values(finalData);
           const placeholders = values.map(() => "?").join(", ");
-          const query = `INSERT INTO ${this._table._tableName} (${keys.join(
-            ", "
-          )}) VALUES (${placeholders})`;
-          await db.execute(query, values);
+          let query = `INSERT INTO ${
+            (this._table as any)._tableName
+          } (${keys.join(", ")}) VALUES (${placeholders})`;
+          const bindings: any[] = [...values];
+          query += this._buildConflictClause();
+          const ret = await this._executeWithReturning(db, query, bindings);
+          if (ret !== undefined) return ret;
         }
+      }
+      _buildConflictClause(): string {
+        if (!this._conflict) return "";
+        if (this._conflict.kind === "doNothing") {
+          const tgt = this._conflict.target
+            ? Array.isArray(this._conflict.target)
+              ? `(${(this._conflict.target as string[]).join(", ")})`
+              : `(${this._conflict.target})`
+            : "";
+          const where = this._conflict.where
+            ? ` WHERE ${(this._conflict.where as SQL).toSQL().clause}`
+            : "";
+          return ` ON CONFLICT ${tgt} DO NOTHING${where}`;
+        }
+        // do update
+        const c = this._conflict;
+        const tgt = Array.isArray(c.target)
+          ? `(${(c.target as string[]).join(", ")})`
+          : `(${c.target})`;
+        const setKeys = Object.keys((c as any).set ?? {});
+        const setClause = setKeys
+          .map((k) => {
+            const v = (c as any).set[k];
+            return `${k} = ${
+              typeof v === "object" && v && typeof v.toSQL === "function"
+                ? (v as SQL).toSQL().clause
+                : "?"
+            }`;
+          })
+          .join(", ");
+        const targetWhere = c.targetWhere
+          ? ` WHERE ${(c.targetWhere as SQL).toSQL().clause}`
+          : "";
+        const setWhere = (c as any).setWhere
+          ? ` WHERE ${((c as any).setWhere as SQL).toSQL().clause}`
+          : "";
+        return ` ON CONFLICT ${tgt}${targetWhere} DO UPDATE SET ${setClause}${setWhere}`;
+      }
+      async _executeWithReturning(db: any, query: string, bindings: any[]) {
+        if (this._returning === null) {
+          await db.execute(query, bindings);
+          return undefined;
+        }
+        if (this._returning === "__RETURNING_ID__") {
+          // SQLite: return last_insert_rowid() as the primary key name if available
+          const rows = await db.select(`SELECT last_insert_rowid() as id`);
+          return rows.map((r: any) => ({ id: r.id }));
+        }
+        if (typeof this._returning === "object") {
+          const cols = Object.entries(
+            this._returning as Record<string, Column<any>>
+          )
+            .map(
+              ([alias, col]) =>
+                `${(col as any).tableName}.${col.name} AS ${alias}`
+            )
+            .join(", ");
+          const retSql = `${query} RETURNING ${cols}`;
+          const res = await db.select(retSql, bindings);
+          return res;
+        }
+        return undefined;
       }
     })();
   }
@@ -194,6 +414,10 @@ export class TauriORM {
       _table = table;
       _data: Record<string, any> | null = null;
       _where: Record<string, any> | SQL | null = null;
+      _orderBy: Array<string | SQL> = [];
+      _limit: number | null = null;
+      _from: Table<any> | null = null;
+      _returning: null | Record<string, Column<any>> = null;
       set(data: Record<string, any>) {
         this._data = data;
         return this;
@@ -201,6 +425,28 @@ export class TauriORM {
       where(cond: Record<string, any> | SQL) {
         this._where = cond;
         return this;
+      }
+      orderBy(...clauses: (string | Column<any> | SQL)[]) {
+        for (const c of clauses) {
+          if (!c) continue;
+          if (typeof c === "string") this._orderBy.push(c);
+          else if (typeof (c as any).toSQL === "function")
+            this._orderBy.push(c as SQL);
+          else this._orderBy.push(getQualifiedName(c as Column));
+        }
+        return this;
+      }
+      limit(n: number) {
+        this._limit = n;
+        return this;
+      }
+      from(tbl: Table<any>) {
+        this._from = tbl;
+        return this;
+      }
+      returning(fields?: Record<string, Column<any>>) {
+        this._returning = fields ?? {};
+        return this as any;
       }
       async execute() {
         if (!this._data)
@@ -217,10 +463,28 @@ export class TauriORM {
             dataToSet[key] = (col as any).onUpdateFn!();
           }
         }
-        const setKeys = Object.keys(dataToSet);
-        const setClause = setKeys.map((k) => `${k} = ?`).join(", ");
-        const bindings: any[] = Object.values(dataToSet);
-        let query = `UPDATE ${this._table._tableName} SET ${setClause}`;
+        // Build SET with SQL support and undefined filtering
+        const setParts: string[] = [];
+        const bindings: any[] = [];
+        for (const [k, v] of Object.entries(dataToSet)) {
+          if (v === undefined) continue; // ignore undefined
+          if (
+            v &&
+            typeof v === "object" &&
+            typeof (v as any).toSQL === "function"
+          ) {
+            const s = (v as SQL).toSQL();
+            setParts.push(`${k} = ${s.clause}`);
+            bindings.push(...s.bindings);
+          } else {
+            setParts.push(`${k} = ?`);
+            bindings.push(v);
+          }
+        }
+        let query = `UPDATE ${
+          (this._table as any)._tableName
+        } SET ${setParts.join(", ")}`;
+        if (this._from) query += ` FROM ${this._from._tableName}`;
         if (this._where) {
           if (typeof (this._where as any).toSQL === "function") {
             const sql = (this._where as SQL).toSQL();
@@ -236,6 +500,34 @@ export class TauriORM {
             }
           }
         }
+        if (this._orderBy.length > 0) {
+          const ordParts: string[] = [];
+          for (const ob of this._orderBy) {
+            if (typeof ob === "string") ordParts.push(ob);
+            else {
+              const s = (ob as SQL).toSQL();
+              ordParts.push(s.clause);
+              bindings.push(...s.bindings);
+            }
+          }
+          query += ` ORDER BY ${ordParts.join(", ")}`;
+        }
+        if (this._limit !== null) {
+          query += ` LIMIT ?`;
+          bindings.push(this._limit);
+        }
+        if (this._returning) {
+          const cols = Object.entries(
+            this._returning as Record<string, Column<any>>
+          )
+            .map(
+              ([alias, col]) =>
+                `${(col as any).tableName}.${col.name} AS ${alias}`
+            )
+            .join(", ");
+          const retSql = `${query} RETURNING ${cols}`;
+          return await db.select(retSql, bindings);
+        }
         await db.execute(query, bindings);
       }
     })();
@@ -246,13 +538,34 @@ export class TauriORM {
     return new (class DeleteBuilder {
       _table = table;
       _where: Record<string, any> | SQL | null = null;
+      _orderBy: Array<string | SQL> = [];
+      _limit: number | null = null;
+      _returning: null | Record<string, Column<any>> = null;
       where(cond: Record<string, any> | SQL) {
         this._where = cond;
         return this;
       }
+      orderBy(...clauses: (string | Column<any> | SQL)[]) {
+        for (const c of clauses) {
+          if (!c) continue;
+          if (typeof c === "string") this._orderBy.push(c);
+          else if (typeof (c as any).toSQL === "function")
+            this._orderBy.push(c as SQL);
+          else this._orderBy.push(getQualifiedName(c as Column));
+        }
+        return this;
+      }
+      limit(n: number) {
+        this._limit = n;
+        return this;
+      }
+      returning(fields?: Record<string, Column<any>>) {
+        this._returning = fields ?? {};
+        return this as any;
+      }
       async execute() {
         const db = await self.getDb();
-        let query = `DELETE FROM ${this._table._tableName}`;
+        let query = `DELETE FROM ${(this._table as any)._tableName}`;
         const bindings: any[] = [];
         if (this._where) {
           if (typeof (this._where as any).toSQL === "function") {
@@ -268,6 +581,34 @@ export class TauriORM {
               bindings.push(...entries.map(([, v]) => v));
             }
           }
+        }
+        if (this._orderBy.length > 0) {
+          const ordParts: string[] = [];
+          for (const ob of this._orderBy) {
+            if (typeof ob === "string") ordParts.push(ob);
+            else {
+              const s = (ob as SQL).toSQL();
+              ordParts.push(s.clause);
+              bindings.push(...s.bindings);
+            }
+          }
+          query += ` ORDER BY ${ordParts.join(", ")}`;
+        }
+        if (this._limit !== null) {
+          query += ` LIMIT ?`;
+          bindings.push(this._limit);
+        }
+        if (this._returning) {
+          const cols = Object.entries(
+            this._returning as Record<string, Column<any>>
+          )
+            .map(
+              ([alias, col]) =>
+                `${(col as any).tableName}.${col.name} AS ${alias}`
+            )
+            .join(", ");
+          const retSql = `${query} RETURNING ${cols}`;
+          return await db.select(retSql, bindings);
         }
         await db.execute(query, bindings);
       }

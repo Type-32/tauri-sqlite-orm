@@ -268,6 +268,90 @@ export function increments(name?: string): ColumnBuilder<number> {
   }) as unknown as ColumnBuilder<number>;
 }
 
+// Constraint/index builders
+export type UniqueSpec = { name?: string; columns: string[] };
+export type PrimaryKeySpec = { name?: string; columns: string[] };
+export type CheckSpec = { name: string; expr: SQLExpression | { raw: string } };
+export type ForeignKeySpec = {
+  name?: string;
+  columns: string[];
+  foreignTable: string;
+  foreignColumns: string[];
+  onDelete?: UpdateDeleteAction;
+  onUpdate?: UpdateDeleteAction;
+};
+export type IndexSpec = {
+  name: string;
+  columns: string[];
+  unique?: boolean;
+  where?: SQLExpression;
+};
+
+export function unique(name?: string) {
+  return {
+    on: (...cols: Column<any>[]) => ({
+      name,
+      columns: cols.map((c) => c.name),
+    }),
+  } as any as { on: (...cols: Column<any>[]) => UniqueSpec };
+}
+export function primaryKey(opts: {
+  name?: string;
+  columns: Column<any>[];
+}): PrimaryKeySpec {
+  return { name: opts.name, columns: opts.columns.map((c) => c.name) };
+}
+export function check(name: string, expr: SQLExpression): CheckSpec {
+  return { name, expr };
+}
+export function foreignKey(opts: {
+  name?: string;
+  columns: Column<any>[];
+  foreignColumns: Column<any>[];
+  onDelete?: UpdateDeleteAction;
+  onUpdate?: UpdateDeleteAction;
+}): ForeignKeySpec {
+  const first = opts.columns[0];
+  return {
+    name: opts.name,
+    columns: opts.columns.map((c) => c.name),
+    foreignTable: first?.tableName || opts.foreignColumns[0]?.tableName || "",
+    foreignColumns: opts.foreignColumns.map((c) => c.name),
+    onDelete: opts.onDelete,
+    onUpdate: opts.onUpdate,
+  };
+}
+export function index(name: string) {
+  return {
+    on: (...cols: Column<any>[]) => ({
+      name,
+      columns: cols.map((c) => c.name),
+    }),
+    where: (expr: SQLExpression) => ({ name, columns: [], where: expr }),
+  } as any as {
+    on: (...cols: Column<any>[]) => IndexSpec;
+    where: (expr: SQLExpression) => IndexSpec;
+  };
+}
+export function uniqueIndex(name: string) {
+  return {
+    on: (...cols: Column<any>[]) => ({
+      name,
+      columns: cols.map((c) => c.name),
+      unique: true,
+    }),
+    where: (expr: SQLExpression) => ({
+      name,
+      columns: [],
+      unique: true,
+      where: expr,
+    }),
+  } as any as {
+    on: (...cols: Column<any>[]) => IndexSpec;
+    where: (expr: SQLExpression) => IndexSpec;
+  };
+}
+
 // Define a type for the schema object passed to defineTable
 type SchemaDefinition = Record<string, Column<any>>;
 
@@ -283,7 +367,12 @@ type KeysMarkedPrimary<T extends SchemaDefinition> = {
 // Our main table definition function
 export function defineTable<T extends SchemaDefinition>(
   tableName: string,
-  schema: T
+  schema: T,
+  extras?: (
+    t: any
+  ) => Array<
+    UniqueSpec | PrimaryKeySpec | CheckSpec | ForeignKeySpec | IndexSpec
+  >
 ) {
   // Attach table name to each column and expose columns at the top-level of the table object
   const finalizedSchema = { ...schema } as T;
@@ -296,6 +385,10 @@ export function defineTable<T extends SchemaDefinition>(
   const table: any = {
     _tableName: tableName,
     _schema: finalizedSchema,
+    _constraints: [] as Array<
+      UniqueSpec | PrimaryKeySpec | CheckSpec | ForeignKeySpec
+    >,
+    _indexes: [] as IndexSpec[],
     // The Drizzle-like type inference properties
     $inferSelect: {} as InferModel<T>,
     $inferInsert: {} as Omit<InferModel<T>, KeysMarkedPrimary<T>>, // omit PK columns
@@ -304,6 +397,38 @@ export function defineTable<T extends SchemaDefinition>(
   // Hoist columns onto the table object so you can do users.id
   for (const [key, col] of Object.entries(finalizedSchema)) {
     table[key] = col;
+  }
+
+  if (extras) {
+    const specs = extras(table) || [];
+    for (const s of specs) {
+      if ((s as any).columns && (s as any).unique !== undefined) {
+        table._indexes.push(s as IndexSpec);
+      } else if ((s as any).columns && (s as any).foreignColumns) {
+        table._constraints.push(s as ForeignKeySpec);
+      } else if (
+        (s as any).columns &&
+        ((s as any).name || (s as any).name === undefined)
+      ) {
+        // unique or pk
+        if (
+          (s as any).columns &&
+          (s as any).name !== undefined &&
+          (s as any).columns.length > 0
+        ) {
+          const pk = s as PrimaryKeySpec;
+          if (pk.columns.length > 1 || (pk.name && pk.name.length > 0)) {
+            table._constraints.push(s as any);
+          } else {
+            table._constraints.push(s as any);
+          }
+        } else {
+          table._constraints.push(s as any);
+        }
+      } else if ((s as any).expr) {
+        table._constraints.push(s as CheckSpec);
+      }
+    }
   }
 
   return table as typeof table & InferModel<T>;
