@@ -376,6 +376,7 @@ export class TauriORM {
           throw new Error(
             "Invalid table passed to insert(): missing table name"
           );
+
         // INSERT ... SELECT path
         if (this._selectSql) {
           const cols = Object.keys((this._table as any)._schema);
@@ -387,6 +388,7 @@ export class TauriORM {
           const ret = await this._executeWithReturning(db, query, bindings);
           return ret;
         }
+
         // VALUES path
         for (const data of this._rows) {
           const finalData: Record<string, any> = Object.assign({}, data as any);
@@ -394,6 +396,7 @@ export class TauriORM {
             string,
             Column<any>
           >;
+
           function coerceValue(col: Column<any> | undefined, value: any) {
             if (col && (col as any).mode === "boolean") {
               return value ? 1 : 0;
@@ -406,18 +409,44 @@ export class TauriORM {
             }
             return value;
           }
+
+          // Handle default values properly
           for (const [key, col] of Object.entries(schema)) {
             if (finalData[key] === undefined) {
               if ((col as any).defaultFn) {
                 finalData[key] = coerceValue(col, (col as any).defaultFn!());
-              } else if ((col as any).onUpdateFn) {
+              } else if (
+                (col as any).onUpdateFn &&
+                !this._rows.includes(data)
+              ) {
+                // onUpdateFn should only apply to updates, not inserts
                 finalData[key] = coerceValue(col, (col as any).onUpdateFn!());
               }
             }
           }
-          const entries = Object.entries(finalData);
-          const keys = entries.map(([k]) => schema[k]?.name ?? k);
-          const values = entries.map(([k, v]) => coerceValue(schema[k], v));
+
+          const entries = Object.entries(finalData).filter(
+            ([_, value]) => value !== undefined
+          );
+          const keys = entries.map(([k]) => {
+            const col = schema[k];
+            return col?.name ?? k;
+          });
+          const values = entries.map(([k, v]) => {
+            const col = schema[k];
+            return coerceValue(col, v);
+          });
+
+          if (keys.length === 0) {
+            // Handle case where no columns are specified
+            let query = `INSERT INTO ${tableName} DEFAULT VALUES`;
+            const bindings: any[] = [];
+            query += this._buildConflictClause();
+            const ret = await this._executeWithReturning(db, query, bindings);
+            if (ret !== undefined) return ret;
+            continue;
+          }
+
           const placeholders = values.map(() => "?").join(", ");
           let query = `INSERT INTO ${tableName} (${keys.join(
             ", "
