@@ -21,6 +21,14 @@ import {
 type InferInsert<T> = T extends { $inferInsert: infer I } ? I : never;
 type InferSelect<T> = T extends { $inferSelect: infer S } ? S : never;
 
+function getTableName(table: Table<any>): string {
+  const anyTable: any = table as any;
+  return (anyTable._tableName ||
+    anyTable.tableName ||
+    anyTable.name ||
+    "") as string;
+}
+
 class SelectQueryBuilder<T> {
   private _table: Table<any> | null = null;
   private _selectedColumns: Array<{ sql: string; alias?: string }> = [];
@@ -126,12 +134,12 @@ class SelectQueryBuilder<T> {
     }
 
     const db = await this._dbProvider();
-    const baseTableName =
-      (this._table as any)._tableName || (this._table as any).tableName;
-    if (!baseTableName)
+    const baseTableName = getTableName(this._table);
+    if (!baseTableName) {
       throw new Error(
-        "Invalid table passed to select.from(): missing _tableName"
+        "Invalid table passed to select.from(): missing table name"
       );
+    }
     const bindings: any[] = [];
     const selectList =
       this._selectedColumns.length > 0
@@ -324,11 +332,10 @@ export class TauriORM {
       }
       async execute() {
         const db = await self.getDb();
-        const tableName =
-          (this._table as any)._tableName || (this._table as any).tableName;
+        const tableName = getTableName(this._table);
         if (!tableName)
           throw new Error(
-            "Invalid table passed to insert(): missing _tableName"
+            "Invalid table passed to insert(): missing table name"
           );
         // INSERT ... SELECT path
         if (this._selectSql) {
@@ -491,11 +498,10 @@ export class TauriORM {
         if (!this._data)
           throw new Error("Update requires set() before execute()");
         const db = await self.getDb();
-        const tableName =
-          (this._table as any)._tableName || (this._table as any).tableName;
+        const tableName = getTableName(this._table);
         if (!tableName)
           throw new Error(
-            "Invalid table passed to update(): missing _tableName"
+            "Invalid table passed to update(): missing table name"
           );
         const schema = (this._table as any)._schema as Record<
           string,
@@ -627,11 +633,10 @@ export class TauriORM {
       }
       async execute() {
         const db = await self.getDb();
-        const tableName =
-          (this._table as any)._tableName || (this._table as any).tableName;
+        const tableName = getTableName(this._table);
         if (!tableName)
           throw new Error(
-            "Invalid table passed to delete(): missing _tableName"
+            "Invalid table passed to delete(): missing table name"
           );
         let query = `DELETE FROM ${tableName}`;
         const bindings: any[] = [];

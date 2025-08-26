@@ -1,13 +1,10 @@
 {
   "name": "@type32/tauri-sqlite-orm",
-  "version": "0.1.11",
+  "version": "0.1.10",
   "description": "A Drizzle-like ORM for Tauri v2's SQL JS API plugin.",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
   "types": "./dist/index.d.ts",
-  "bin": {
-    "tauriorm-kit": "./dist/cli.mjs"
-  },
   "exports": {
     ".": {
       "import": "./dist/index.mjs",
@@ -18,8 +15,8 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsup src/index.ts src/cli.ts --format esm,cjs --dts",
-    "dev": "tsup src/index.ts src/cli.ts --format esm,cjs --dts --watch",
+    "build": "tsup src/index.ts --format esm,cjs --dts",
+    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [
