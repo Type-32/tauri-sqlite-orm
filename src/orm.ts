@@ -731,7 +731,9 @@ export class TauriORM {
   }
 
   private generateCreateTableSql(table: Table<any>): string {
-    const tableName = table._tableName;
+    const tableName = getTableName(table);
+    if (!tableName)
+      throw new Error("Invalid table passed to DDL: missing table name");
     const columns: Column<any>[] = Object.values(table._schema);
     const columnDefs = columns.map((col) => {
       let def = `${col.name} ${col.type}`;
@@ -956,8 +958,8 @@ export class TauriORM {
   }> {
     if (!this._tables) throw new Error("No tables configured.");
     const dbi = await this.getDb();
-    const configuredNames = Object.values(this._tables).map(
-      (t) => (t as any)._tableName as string
+    const configuredNames = Object.values(this._tables).map((t) =>
+      getTableName(t as any)
     );
     const existing = await dbi.select<any[]>(
       `SELECT name FROM sqlite_master WHERE type='table'`
@@ -971,7 +973,7 @@ export class TauriORM {
     );
     const tables: any = {};
     for (const tbl of Object.values(this._tables)) {
-      const tableName = (tbl as any)._tableName as string;
+      const tableName = getTableName(tbl as any);
       if (!existingNames.includes(tableName)) {
         tables[tableName] = {
           missingColumns: Object.keys((tbl as any)._schema),
@@ -1179,7 +1181,7 @@ export class TauriORM {
     const dbi = await this.getDb();
     const preserve = options?.preserveData !== false;
     for (const tbl of tables) {
-      const tableName = (tbl as any)._tableName as string;
+      const tableName = getTableName(tbl as any);
       const exists = await this.tableExists(tableName);
       if (!exists) {
         await this.run(this.buildCreateTableSQL(tbl));
