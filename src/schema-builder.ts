@@ -292,6 +292,8 @@ export function unique(name?: string) {
     on: (...cols: Column<any>[]) => ({
       name,
       columns: cols.map((c) => c.name),
+      // runtime marker for DDL rendering
+      kind: "unique",
     }),
   } as any as { on: (...cols: Column<any>[]) => UniqueSpec };
 }
@@ -299,7 +301,12 @@ export function primaryKey(opts: {
   name?: string;
   columns: Column<any>[];
 }): PrimaryKeySpec {
-  return { name: opts.name, columns: opts.columns.map((c) => c.name) };
+  return {
+    name: opts.name,
+    columns: opts.columns.map((c) => c.name),
+    // runtime marker for DDL rendering
+    kind: "primaryKey",
+  } as any;
 }
 export function check(name: string, expr: SQLExpression): CheckSpec {
   return { name, expr };

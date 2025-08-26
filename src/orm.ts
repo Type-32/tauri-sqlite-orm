@@ -17,6 +17,10 @@ import {
   getQualifiedName,
 } from "./sql-helpers";
 
+// Helper type extractors for stronger typing
+type InferInsert<T> = T extends { $inferInsert: infer I } ? I : never;
+type InferSelect<T> = T extends { $inferSelect: infer S } ? S : never;
+
 class SelectQueryBuilder<T> {
   private _table: Table<any> | null = null;
   private _selectedColumns: Array<{ sql: string; alias?: string }> = [];
@@ -206,7 +210,10 @@ export class TauriORM {
   private _dbPromise: Promise<Database>;
 
   constructor(dbUri: string) {
-    this._dbPromise = Database.load(dbUri);
+    this._dbPromise = Database.load(dbUri).then(async (db) => {
+      await db.execute("PRAGMA foreign_keys = ON");
+      return db;
+    });
   }
 
   private async getDb(): Promise<Database> {
@@ -220,23 +227,30 @@ export class TauriORM {
   ): void {
     this.configure(tables, relations);
   }
-  select<T>(fields?: Record<string, Column<any>>): SelectQueryBuilder<T> {
-    return new SelectQueryBuilder<T>(this.getDb.bind(this), fields);
+  // Typed select with column map
+  select<TFields extends Record<string, Column<any>>>(
+    fields: TFields
+  ): SelectQueryBuilder<{ [K in keyof TFields]: TFields[K]["_dataType"] }>;
+  select<T = any>(fields?: undefined): SelectQueryBuilder<T>;
+  select(fields?: Record<string, Column<any>>): any {
+    return new SelectQueryBuilder<any>(this.getDb.bind(this), fields);
   }
-  selectDistinct<T>(
-    fields?: Record<string, Column<any>>
-  ): SelectQueryBuilder<T> {
-    const qb = new SelectQueryBuilder<T>(this.getDb.bind(this), fields);
+  selectDistinct<TFields extends Record<string, Column<any>>>(
+    fields: TFields
+  ): SelectQueryBuilder<{ [K in keyof TFields]: TFields[K]["_dataType"] }>;
+  selectDistinct<T = any>(fields?: undefined): SelectQueryBuilder<T>;
+  selectDistinct(fields?: Record<string, Column<any>>): any {
+    const qb = new SelectQueryBuilder<any>(this.getDb.bind(this), fields);
     qb.distinct();
     return qb;
   }
 
   // --- Drizzle-style CRUD builders ---
-  insert(table: Table<any>) {
+  insert<TTable extends Table<any>>(table: TTable) {
     const self = this;
     return new (class InsertBuilder {
       _table = table;
-      _rows: Record<string, any>[] = [];
+      _rows: Array<InferInsert<TTable>> = [];
       _selectSql: { clause: string; bindings: any[] } | null = null;
       _conflict:
         | null
@@ -250,7 +264,7 @@ export class TauriORM {
           } = null;
       _returning: null | "__RETURNING_ID__" | Record<string, Column<any>> =
         null;
-      values(rowOrRows: Record<string, any> | Record<string, any>[]) {
+      values(rowOrRows: InferInsert<TTable> | Array<InferInsert<TTable>>) {
         this._rows = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
         return this;
       }
@@ -317,7 +331,7 @@ export class TauriORM {
         }
         // VALUES path
         for (const data of this._rows) {
-          const finalData: Record<string, any> = { ...data };
+          const finalData: Record<string, any> = Object.assign({}, data as any);
           const schema = (this._table as any)._schema as Record<
             string,
             Column<any>
@@ -408,17 +422,17 @@ export class TauriORM {
     })();
   }
 
-  update(table: Table<any>) {
+  update<TTable extends Table<any>>(table: TTable) {
     const self = this;
     return new (class UpdateBuilder {
       _table = table;
-      _data: Record<string, any> | null = null;
+      _data: Partial<InferInsert<TTable>> | null = null;
       _where: Record<string, any> | SQL | null = null;
       _orderBy: Array<string | SQL> = [];
       _limit: number | null = null;
       _from: Table<any> | null = null;
       _returning: null | Record<string, Column<any>> = null;
-      set(data: Record<string, any>) {
+      set(data: Partial<InferInsert<TTable>>) {
         this._data = data;
         return this;
       }
@@ -533,15 +547,15 @@ export class TauriORM {
     })();
   }
 
-  delete(table: Table<any>) {
+  delete<TTable extends Table<any>>(table: TTable) {
     const self = this;
     return new (class DeleteBuilder {
       _table = table;
-      _where: Record<string, any> | SQL | null = null;
+      _where: Partial<InferInsert<TTable>> | SQL | null = null;
       _orderBy: Array<string | SQL> = [];
       _limit: number | null = null;
       _returning: null | Record<string, Column<any>> = null;
-      where(cond: Record<string, any> | SQL) {
+      where(cond: Partial<InferInsert<TTable>> | SQL) {
         this._where = cond;
         return this;
       }
@@ -678,20 +692,104 @@ export class TauriORM {
       }
       return def;
     });
-    return `CREATE TABLE IF NOT EXISTS ${tableName} (${columnDefs.join(
-      ", "
-    )});`;
+    // Table-level constraints and composite indexes/keys
+    const tableConstraints: string[] = [];
+    const constraints = (table as any)._constraints as Array<any> | undefined;
+    // no-op pre-scan removed
+    // Render Unique/PK/Check/ForeignKey constraints
+    if (constraints && constraints.length) {
+      for (const spec of constraints) {
+        if ((spec as any).expr) {
+          const name = (spec as any).name;
+          const expr =
+            (spec as any).expr.raw ??
+            (spec as any).expr?.raw ??
+            String((spec as any).expr);
+          tableConstraints.push(
+            name ? `CONSTRAINT ${name} CHECK (${expr})` : `CHECK (${expr})`
+          );
+          continue;
+        }
+        if ((spec as any).foreignColumns) {
+          const name = (spec as any).name as string | undefined;
+          const cols = ((spec as any).columns as string[]).join(", ");
+          const fTable = (spec as any).foreignTable as string;
+          const fCols = ((spec as any).foreignColumns as string[]).join(", ");
+          let clause = `${
+            name ? `CONSTRAINT ${name} ` : ""
+          }FOREIGN KEY (${cols}) REFERENCES ${fTable} (${fCols})`;
+          if ((spec as any).onDelete)
+            clause += ` ON DELETE ${String(
+              (spec as any).onDelete
+            ).toUpperCase()}`;
+          if ((spec as any).onUpdate)
+            clause += ` ON UPDATE ${String(
+              (spec as any).onUpdate
+            ).toUpperCase()}`;
+          tableConstraints.push(clause);
+          continue;
+        }
+        if ((spec as any).columns) {
+          const cols = ((spec as any).columns as string[]).join(", ");
+          const name = (spec as any).name as string | undefined;
+          // Heuristic: if there are multiple columns and name suggests pk, treat as PK; otherwise UNIQUE
+          const isPk =
+            (spec as any).kind === "primaryKey" ||
+            (name && name.toLowerCase().includes("pk"));
+          if (isPk) {
+            tableConstraints.push(
+              name
+                ? `CONSTRAINT ${name} PRIMARY KEY (${cols})`
+                : `PRIMARY KEY (${cols})`
+            );
+          } else {
+            tableConstraints.push(
+              name ? `CONSTRAINT ${name} UNIQUE (${cols})` : `UNIQUE (${cols})`
+            );
+          }
+          continue;
+        }
+      }
+    }
+    const parts = [...columnDefs, ...tableConstraints];
+    return `CREATE TABLE IF NOT EXISTS ${tableName} (${parts.join(", ")});`;
   }
 
   async createTableIfNotExists(table: Table<any>): Promise<void> {
     const sql = this.generateCreateTableSql(table);
     await this.run(sql);
+    await this.createIndexesForTable(table);
   }
 
   async createTablesIfNotExist(tables: Table<any>[]): Promise<void> {
     for (const t of tables) {
       await this.createTableIfNotExists(t);
     }
+  }
+
+  private generateCreateIndexSqls(table: Table<any>): string[] {
+    const tableName = (table as any)._tableName as string;
+    const indexes = ((table as any)._indexes as Array<any>) || [];
+    const stmts: string[] = [];
+    for (const idx of indexes) {
+      const unique = idx.unique ? "UNIQUE " : "";
+      if (!idx.name) continue;
+      const colList: string[] = Array.isArray(idx.columns)
+        ? (idx.columns as string[])
+        : [];
+      if (colList.length === 0) continue;
+      const cols = `(${colList.join(", ")})`;
+      const where = idx.where?.raw ? ` WHERE ${idx.where.raw}` : "";
+      stmts.push(
+        `CREATE ${unique}INDEX IF NOT EXISTS ${idx.name} ON ${tableName} ${cols}${where};`
+      );
+    }
+    return stmts;
+  }
+
+  private async createIndexesForTable(table: Table<any>): Promise<void> {
+    const stmts = this.generateCreateIndexSqls(table);
+    for (const s of stmts) await this.run(s);
   }
 
   private async ensureMigrationsTable(): Promise<void> {
@@ -724,26 +822,43 @@ export class TauriORM {
     const track = options?.track ?? true;
     if (track) {
       await this.ensureMigrationsTable();
+    }
+    // Always enforce the schema (idempotent)
+    await this.forcePushForTables(tables, { preserveData: true });
+    if (track) {
       const name =
         options?.name ?? `init:${tables.map((t) => t._tableName).join(",")}`;
       const already = await this.hasMigration(name);
-      if (already) return;
-      await this.createTablesIfNotExist(tables);
-      await this.recordMigration(name);
-      return;
+      if (!already) await this.recordMigration(name);
     }
-    await this.createTablesIfNotExist(tables);
   }
 
   // Configure schema and relations, and generate db.query automatically
-  configure(
-    tables: Record<string, Table<any>>,
-    relDefs?: Record<string, Record<string, RelationConfig>>
-  ) {
-    this._tables = tables;
-    this._relations = relDefs ?? {};
-    this.query = makeQueryAPI(tables, this._relations, this.getDb.bind(this));
-    return this;
+  configure<
+    TTables extends Record<string, Table<any>>,
+    TRelDefs extends Record<string, Record<string, RelationConfig>> = Record<
+      string,
+      Record<string, RelationConfig>
+    >
+  >(
+    tables: TTables,
+    relDefs?: TRelDefs
+  ): this & {
+    query: {
+      [K in keyof TTables]: {
+        findMany: (opts?: any) => Promise<Array<InferSelect<TTables[K]>>>;
+        findFirst: (opts?: any) => Promise<InferSelect<TTables[K]> | null>;
+      };
+    };
+  } {
+    this._tables = tables as any;
+    this._relations = (relDefs as any) ?? {};
+    this.query = makeQueryAPI(
+      tables as any,
+      (this._relations ?? {}) as any,
+      this.getDb.bind(this)
+    );
+    return this as any;
   }
 
   // Convenience: migrate from configured tables
@@ -751,6 +866,7 @@ export class TauriORM {
     if (!this._tables)
       throw new Error("No tables configured. Call db.configure({...}) first.");
     await this.migrate(Object.values(this._tables), options);
+    await this.setSchemaMeta("schema_signature", this.computeModelSignature());
   }
 
   // --- Schema diff and CLI-like helpers ---
@@ -916,6 +1032,14 @@ export class TauriORM {
     entries.sort((a, b) => a.table.localeCompare(b.table));
     return JSON.stringify(entries);
   }
+  getSchemaSignature(): string {
+    return this.computeModelSignature();
+  }
+  async printSchemaDiff(): Promise<void> {
+    const diff = await this.diffSchema();
+    // eslint-disable-next-line no-console
+    console.log("Schema diff:", JSON.stringify(diff, null, 2));
+  }
 
   async isSchemaDirty(): Promise<{
     dirty: boolean;
@@ -931,7 +1055,10 @@ export class TauriORM {
     const status = await this.isSchemaDirty();
     if (!this._tables) throw new Error("No tables configured.");
     if (status.dirty) {
-      await this.migrate(Object.values(this._tables), options);
+      // Enforce schema regardless of tracked migrations
+      await this.forcePushForTables(Object.values(this._tables), {
+        preserveData: true,
+      });
       await this.setSchemaMeta(
         "schema_signature",
         this.computeModelSignature()
@@ -979,13 +1106,21 @@ export class TauriORM {
     preserveData?: boolean;
   }) {
     if (!this._tables) throw new Error("No tables configured.");
+    await this.forcePushForTables(Object.values(this._tables), options);
+  }
+
+  private async forcePushForTables(
+    tables: Table<any>[],
+    options?: { dropExtraColumns?: boolean; preserveData?: boolean }
+  ) {
     const dbi = await this.getDb();
     const preserve = options?.preserveData !== false;
-    for (const tbl of Object.values(this._tables)) {
+    for (const tbl of tables) {
       const tableName = (tbl as any)._tableName as string;
       const exists = await this.tableExists(tableName);
       if (!exists) {
         await this.run(this.buildCreateTableSQL(tbl));
+        await this.createIndexesForTable(tbl);
         continue;
       }
       // Introspect existing
@@ -1041,6 +1176,7 @@ export class TauriORM {
         }
         await this.run(`DROP TABLE ${tableName}`);
         await this.run(`ALTER TABLE ${tmp} RENAME TO ${tableName}`);
+        await this.createIndexesForTable(tbl);
       } else {
         // Add missing columns
         for (const m of missing) {
@@ -1052,6 +1188,7 @@ export class TauriORM {
           }
           await this.run(`ALTER TABLE ${tableName} ADD COLUMN ${clause}`);
         }
+        await this.createIndexesForTable(tbl);
       }
     }
     await this.setSchemaMeta("schema_signature", this.computeModelSignature());
