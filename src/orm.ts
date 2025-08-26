@@ -65,10 +65,7 @@ type FindFirstOptions<TTable extends Table<any>> = Omit<
 
 function getTableName(table: Table<any>): string {
   const anyTable: any = table as any;
-  return (anyTable._tableName ||
-    anyTable.tableName ||
-    anyTable.name ||
-    "") as string;
+  return (anyTable.tableName || anyTable.name || "") as string;
 }
 
 class SelectQueryBuilder<T> {
@@ -130,7 +127,7 @@ class SelectQueryBuilder<T> {
 
   leftJoin(otherTable: Table<any>, on: SQL): this {
     const onSql = on.toSQL();
-    const joinClause = `LEFT JOIN ${otherTable._tableName} ON ${onSql.clause}`;
+    const joinClause = `LEFT JOIN ${otherTable.tableName} ON ${onSql.clause}`;
     this._joins.push(joinClause);
     return this;
   }
@@ -594,7 +591,7 @@ export class TauriORM {
           }
         }
         let query = `UPDATE ${tableName} SET ${setParts.join(", ")}`;
-        if (this._from) query += ` FROM ${this._from._tableName}`;
+        if (this._from) query += ` FROM ${this._from.tableName}`;
         if (this._where) {
           if (typeof (this._where as any).toSQL === "function") {
             const sql = (this._where as SQL).toSQL();
@@ -875,7 +872,7 @@ export class TauriORM {
   }
 
   private generateCreateIndexSqls(table: Table<any>): string[] {
-    const tableName = (table as any)._tableName as string;
+    const tableName = (table as any).tableName as string;
     const indexes = ((table as any)._indexes as Array<any>) || [];
     const stmts: string[] = [];
     for (const idx of indexes) {
@@ -934,7 +931,7 @@ export class TauriORM {
     await this.forcePushForTables(tables, { preserveData: true });
     if (track) {
       const name =
-        options?.name ?? `init:${tables.map((t) => t._tableName).join(",")}`;
+        options?.name ?? `init:${tables.map((t) => t.tableName).join(",")}`;
       const already = await this.hasMigration(name);
       if (!already) await this.recordMigration(name);
     }
@@ -1138,7 +1135,7 @@ export class TauriORM {
       )
         .map((c) => this.normalizeColumn(c))
         .sort((a, b) => a.name.localeCompare(b.name));
-      return { table: (tbl as any)._tableName as string, columns: cols };
+      return { table: (tbl as any).tableName as string, columns: cols };
     });
     entries.sort((a, b) => a.table.localeCompare(b.table));
     return JSON.stringify(entries);
@@ -1185,7 +1182,7 @@ export class TauriORM {
     const dbi = await this.getDb();
     const result: Record<string, any> = {};
     for (const tbl of Object.values(this._tables)) {
-      const name = (tbl as any)._tableName as string;
+      const name = (tbl as any).tableName as string;
       const cols = await dbi.select<any[]>(`PRAGMA table_info('${name}')`);
       result[name] = cols.map((c) => ({
         name: c.name,
@@ -1273,7 +1270,7 @@ export class TauriORM {
         // But created with original name; create with tmp name instead
         // Workaround: create tmp table explicitly
         await this.run(
-          this.buildCreateTableSQL({ ...(tbl as any), _tableName: tmp } as any)
+          this.buildCreateTableSQL({ ...(tbl as any), tableName: tmp } as any)
         );
         const existingNames = existingCols.map((c) => c.name);
         const modelNames = modelCols.map((c) => c.name);
@@ -1365,10 +1362,10 @@ function guessChildFk(
     return rel.cfg.fields[0];
   const basePk = getPrimaryKey(base);
   const guessNames = [
-    `${base._tableName}_id`,
-    `${base._tableName}Id`,
+    `${base.tableName}_id`,
+    `${base.tableName}Id`,
     `${basePk.name}`,
-    `${base._tableName.slice(0, -1)}Id`,
+    `${base.tableName.slice(0, -1)}Id`,
   ];
   return (
     childCols.find((c) => guessNames.includes(c.name)) ||
@@ -1426,7 +1423,7 @@ export function makeQueryAPI(
 ) {
   const api: any = {};
   const tableKeyByName: Record<string, string> = {};
-  for (const [k, t] of Object.entries(tables)) tableKeyByName[t._tableName] = k;
+  for (const [k, t] of Object.entries(tables)) tableKeyByName[t.tableName] = k;
   for (const [tblKey, tbl] of Object.entries(tables)) {
     api[tblKey] = {
       async findMany(opts?: {
@@ -1485,7 +1482,7 @@ export function makeQueryAPI(
             baseSelected = baseCols.map((c) => c.name);
           }
           for (const name of baseSelected)
-            selectParts.push(`${base._tableName}.${name} AS __base_${name}`);
+            selectParts.push(`${base.tableName}.${name} AS __base_${name}`);
 
           const joins: string[] = [];
           const relColsMap: Record<string, string[]> = {};
@@ -1508,16 +1505,16 @@ export function makeQueryAPI(
               const mapping = guessOneRelationJoin(base, rel);
               if (!mapping) continue;
               // If lhs is child (child.fk = base.pk), store fk for grouping
-              if (mapping.lhsTable._tableName === child._tableName) {
+              if (mapping.lhsTable.tableName === child.tableName) {
                 fkMap[relName] = { childFk: mapping.lhsCol, childPk };
                 joins.push(
-                  `LEFT JOIN ${child._tableName} ON ${mapping.lhsTable._tableName}.${mapping.lhsCol.name} = ${mapping.rhsTable._tableName}.${mapping.rhsCol.name}`
+                  `LEFT JOIN ${child.tableName} ON ${mapping.lhsTable.tableName}.${mapping.lhsCol.name} = ${mapping.rhsTable.tableName}.${mapping.rhsCol.name}`
                 );
               } else {
                 // Base has FK to child: base.fk = child.pk
                 fkMap[relName] = { childFk: mapping.rhsCol, childPk };
                 joins.push(
-                  `LEFT JOIN ${child._tableName} ON ${mapping.lhsTable._tableName}.${mapping.lhsCol.name} = ${mapping.rhsTable._tableName}.${mapping.rhsCol.name}`
+                  `LEFT JOIN ${child.tableName} ON ${mapping.lhsTable.tableName}.${mapping.lhsCol.name} = ${mapping.rhsTable.tableName}.${mapping.rhsCol.name}`
                 );
               }
             } else {
@@ -1525,7 +1522,7 @@ export function makeQueryAPI(
               if (!childFk) continue;
               fkMap[relName] = { childFk, childPk };
               joins.push(
-                `LEFT JOIN ${child._tableName} ON ${child._tableName}.${childFk.name} = ${base._tableName}.${basePk.name}`
+                `LEFT JOIN ${child.tableName} ON ${child.tableName}.${childFk.name} = ${base.tableName}.${basePk.name}`
               );
             }
             const selected =
@@ -1535,12 +1532,12 @@ export function makeQueryAPI(
             relColsMap[relName] = selected;
             for (const name of selected)
               selectParts.push(
-                `${child._tableName}.${name} AS __rel_${relName}_${name}`
+                `${child.tableName}.${name} AS __rel_${relName}_${name}`
               );
           }
 
           let sqlText = `SELECT ${selectParts.join(", ")} FROM ${
-            base._tableName
+            base.tableName
           }${joins.length ? " " + joins.join(" ") : ""}`;
           const bindings: any[] = [];
           if (opts?.where) {
@@ -1558,7 +1555,7 @@ export function makeQueryAPI(
               const entries = Object.entries(opts.where as Record<string, any>);
               if (entries.length > 0) {
                 sqlText += ` WHERE ${entries
-                  .map(([k]) => `${base._tableName}.${k} = ?`)
+                  .map(([k]) => `${base.tableName}.${k} = ?`)
                   .join(" AND ")}`;
                 bindings.push(...entries.map(([, v]) => v));
               }
@@ -1642,7 +1639,7 @@ export function makeQueryAPI(
           );
         }
         let baseSql = `SELECT ${baseSelected.join(", ")} FROM ${
-          base._tableName
+          base.tableName
         }`;
         const baseBindings: any[] = [];
         if (opts?.where) {
@@ -1687,7 +1684,7 @@ export function makeQueryAPI(
           const relsMap =
             relDefs[
               Object.keys(tables).find(
-                (k) => tables[k]._tableName === parentTable._tableName
+                (k) => tables[k].tableName === parentTable.tableName
               )!
             ] || {};
           for (const [relName, v] of Object.entries(spec)) {
@@ -1704,7 +1701,7 @@ export function makeQueryAPI(
               const fkCol = guessChildFk(child, parentTable, rel);
               if (!fkCol) continue;
               const sql = `SELECT ${selectCols.join(", ")} FROM ${
-                child._tableName
+                child.tableName
               } WHERE ${fkCol.name} IN (${parentIds
                 .map(() => "?")
                 .join(", ")})`;
@@ -1727,10 +1724,10 @@ export function makeQueryAPI(
             } else {
               const mapping = guessOneRelationJoin(parentTable, rel);
               if (!mapping) continue;
-              if (mapping.lhsTable._tableName === child._tableName) {
+              if (mapping.lhsTable.tableName === child.tableName) {
                 // child.fk = parent.pk
                 const sql = `SELECT ${selectCols.join(", ")} FROM ${
-                  child._tableName
+                  child.tableName
                 } WHERE ${mapping.lhsCol.name} IN (${parentIds
                   .map(() => "?")
                   .join(", ")})`;
@@ -1751,7 +1748,7 @@ export function makeQueryAPI(
                   for (const p of parents) (p as any)[relName] = null;
                 } else {
                   const sql = `SELECT ${selectCols.join(", ")} FROM ${
-                    child._tableName
+                    child.tableName
                   } WHERE ${childPkName} IN (${childIds
                     .map(() => "?")
                     .join(", ")})`;
