@@ -56,6 +56,20 @@ const res = await db.query.users.findMany({
 });
 ```
 
+### Documentation
+
+- See full docs in `docs/`:
+  - Getting Started: `docs/getting-started.md`
+  - Schema & Types: `docs/schema-and-types.md`
+  - Relations: `docs/relations.md`
+  - Queries (select): `docs/queries-select.md`
+  - CRUD (insert): `docs/crud-insert.md`
+  - CRUD (update): `docs/crud-update.md`
+  - CRUD (delete): `docs/crud-delete.md`
+  - SQL Helpers: `docs/sql-helpers.md`
+  - Indexes & Constraints: `docs/indexes-constraints.md`
+  - Migrations: `docs/migrations.md`
+
 ### Schema builder
 
 Chainable, Drizzle-style:
@@ -235,12 +249,6 @@ export default defineNuxtPlugin(async () => {
   return { provide: { db } };
 });
 ```
-
-### Roadmap
-
-- Aliasing helpers and typed orderBy (asc(users.id)) for findMany
-- Unique(), check(), composite primary/unique constraints
-- Insert returning / batch returning (where feasible)
 
 ### License
 
