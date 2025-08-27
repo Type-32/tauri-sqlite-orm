@@ -416,7 +416,7 @@ export class SelectQueryBuilder<
       : InferSelectModel<TTable>[]
   > {
     const { sql, params } = this.build();
-    return this.db.select(sql, ...params) as any;
+    return this.db.select(sql, params) as any;
   }
 }
 
@@ -456,7 +456,7 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
       columns.map((col) => (data as any)[col])
     );
 
-    const result = await this.db.execute(this.query, ...params);
+    const result = await this.db.execute(this.query, params);
     return result.lastInsertId ?? 0;
   }
 }
@@ -491,7 +491,7 @@ export class UpdateQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
     this.params.push(...entries.map(([, value]) => value));
 
     const { sql, params } = this.build();
-    const result = await this.db.execute(sql, ...params);
+    const result = await this.db.execute(sql, params);
     return result.rowsAffected;
   }
 }
@@ -504,7 +504,7 @@ export class DeleteQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
 
   async execute(): Promise<number> {
     const { sql, params } = this.build();
-    const result = await this.db.execute(sql, ...params);
+    const result = await this.db.execute(sql, params);
     return result.rowsAffected;
   }
 }
