@@ -913,11 +913,15 @@ export class TauriORM {
 
   constructor(
     private db: Database,
-    schema: Record<string, AnyTable> | undefined = undefined
+    schema:
+      | Record<string, AnyTable | Record<string, Relation>>
+      | undefined = undefined
   ) {
     if (schema) {
       for (const table of Object.values(schema)) {
-        this.tables.set(table._.name, table);
+        if (table instanceof Table) {
+          this.tables.set(table._.name, table);
+        }
       }
     }
   }
@@ -1105,25 +1109,49 @@ export class TauriORM {
   }
 }
 
-// Relations (simplified for this example)
-export const relations = <T extends AnyTable, R extends Record<string, any>>(
-  table: T,
-  relationsCallback: (helpers: { one: any; many: any }) => R
+// Relations
+export class Relation<T extends AnyTable = AnyTable> {
+  constructor(public foreignTable: T) {}
+}
+export class OneRelation<T extends AnyTable = AnyTable> extends Relation<T> {
+  constructor(
+    foreignTable: T,
+    public config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
+  ) {
+    super(foreignTable);
+  }
+}
+export class ManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
+  constructor(foreignTable: T) {
+    super(foreignTable);
+  }
+}
+
+type RelationsBuilder = {
+  one: <U extends AnyTable>(
+    table: U,
+    config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
+  ) => OneRelation<U>;
+  many: <U extends AnyTable>(table: U) => ManyRelation<U>;
+};
+
+export const relations = <
+  T extends AnyTable,
+  R extends Record<string, Relation>
+>(
+  _table: T,
+  relationsCallback: (helpers: RelationsBuilder) => R
 ): R => {
   return relationsCallback({
     one: <U extends AnyTable>(
       table: U,
-      config: { fields: [AnySQLiteColumn]; references: [AnySQLiteColumn] }
-    ) => ({
-      table,
-      type: "one" as const,
-      foreignKey: config.fields[0],
-      localKey: config.references[0],
-    }),
-    many: <U extends AnyTable>(table: U) => ({
-      table,
-      type: "many" as const,
-    }),
+      config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
+    ) => {
+      return new OneRelation(table, config);
+    },
+    many: <U extends AnyTable>(table: U) => {
+      return new ManyRelation(table);
+    },
   });
 };
 
