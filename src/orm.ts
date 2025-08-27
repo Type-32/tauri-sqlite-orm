@@ -545,31 +545,57 @@ export class TauriORM {
     }
   }
 
-  async migrate(): Promise<void> {
-    // Simplified migration implementation
-    for (const table of this.tables.values()) {
-      const columnsSql = Object.entries(table._.columns)
-        .map(([name, col]) => {
-          let sql = `${col._.name} ${col.type}`;
-          if (col.options.primaryKey) sql += " PRIMARY KEY";
-          if (col._.autoincrement) sql += " AUTOINCREMENT";
-          if (col._.notNull) sql += " NOT NULL";
-          if (col.options.unique) sql += " UNIQUE";
-          if (col.options.default !== undefined) {
-            const value = col.options.default;
-            sql += ` DEFAULT ${
-              typeof value === "string" ? `'${value}'` : value
-            }`;
-          }
-          if (col.options.references) {
-            sql += ` REFERENCES ${col.options.references.table._.name}(${col.options.references.column._.name})`;
-          }
-          return sql;
-        })
-        .join(", ");
+  private buildColumnDefinition(
+    col: AnySQLiteColumn,
+    forAlterTable: boolean = false
+  ): string {
+    let sql = `${col._.name} ${col.type}`;
+    if (col.options.primaryKey && !forAlterTable) {
+      sql += " PRIMARY KEY";
+      if (col._.autoincrement) {
+        sql += " AUTOINCREMENT";
+      }
+    }
+    if (col._.notNull) sql += " NOT NULL";
+    if (col.options.unique) sql += " UNIQUE";
+    if (col.options.default !== undefined) {
+      const value = col.options.default;
+      sql += ` DEFAULT ${
+        typeof value === "string" ? `'${value.replace(/'/g, "''")}'` : value
+      }`;
+    }
+    if (col.options.references) {
+      sql += ` REFERENCES ${col.options.references.table._.name}(${col.options.references.column._.name})`;
+    }
+    return sql;
+  }
 
-      const createSql = `CREATE TABLE IF NOT EXISTS ${table._.name} (${columnsSql})`;
-      await this.db.execute(createSql);
+  async migrate(): Promise<void> {
+    for (const table of this.tables.values()) {
+      const existingTableInfo: { name: string }[] = await this.db.select(
+        `PRAGMA table_info('${table._.name}')`
+      );
+
+      if (existingTableInfo.length === 0) {
+        // Table does not exist, create it
+        const columnsSql = Object.values(table._.columns)
+          .map((col) => this.buildColumnDefinition(col))
+          .join(", ");
+        const createSql = `CREATE TABLE ${table._.name} (${columnsSql})`;
+        await this.db.execute(createSql);
+      } else {
+        // Table exists, add missing columns
+        const existingColumnNames = new Set(
+          existingTableInfo.map((c) => c.name)
+        );
+        for (const column of Object.values(table._.columns)) {
+          if (!existingColumnNames.has(column._.name)) {
+            const columnSql = this.buildColumnDefinition(column, true);
+            const alterSql = `ALTER TABLE ${table._.name} ADD COLUMN ${columnSql}`;
+            await this.db.execute(alterSql);
+          }
+        }
+      }
     }
   }
 
@@ -635,12 +661,15 @@ export class TauriORM {
       pk: !!col.options.primaryKey,
       ai: !!col._.autoincrement,
       nn: !!col._.notNull,
+      unique: !!col.options.unique,
       dv:
         col.options.default &&
         typeof col.options.default === "object" &&
         (col.options.default as any).raw
           ? { raw: (col.options.default as any).raw }
           : col.options.default ?? null,
+      hasDefaultFn: col.options.$defaultFn !== undefined,
+      hasOnUpdateFn: col.options.$onUpdateFn !== undefined,
     };
   }
 

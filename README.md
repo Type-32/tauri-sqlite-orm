@@ -134,7 +134,7 @@ import { eq } from "@type32/tauri-sqlite-orm";
 await db
   .update(users)
   .set({ email: "new.email@example.com" })
-  .where(eq(users.id, 1));
+  .where(eq(users._.columns.id, 1));
 ```
 
 **DELETE**
@@ -143,7 +143,7 @@ await db
 import { eq } from "@type32/tauri-sqlite-orm";
 
 // Delete a user
-await db.delete(users).where(eq(users.id, 1));
+await db.delete(users).where(eq(users._.columns.id, 1));
 ```
 
 ### Migrations
@@ -165,7 +165,7 @@ Run multiple database operations within a transaction to ensure atomicity.
 ```typescript
 await db.transaction(async (tx) => {
   await tx.insert(users).values({ name: "From Transaction" });
-  await tx.delete(users).where(eq(users.id, 1));
+  await tx.delete(users).where(eq(users._.columns.id, 1));
 });
 ```
 
