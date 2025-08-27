@@ -441,22 +441,41 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
       throw new Error("No data provided for insert");
     }
 
-    const columns = Object.keys(
-      this.dataSets[0]
-    ) as (keyof T["_"]["columns"])[];
+    const processedDataSets = this.dataSets.map((dataSet) => {
+      const finalData: Partial<InferInsertModel<T>> = { ...dataSet };
+      for (const [key, column] of Object.entries(this.table._.columns)) {
+        if (finalData[key as keyof typeof finalData] === undefined) {
+          if (column.options.$defaultFn) {
+            (finalData as any)[key] = column.options.$defaultFn();
+          }
+        }
+      }
+      return finalData;
+    });
+
+    const allKeys = new Set<keyof T["_"]["columns"]>();
+    for (const dataSet of processedDataSets) {
+      for (const key of Object.keys(dataSet)) {
+        allKeys.add(key as keyof T["_"]["columns"]);
+      }
+    }
+    const columns = Array.from(allKeys);
+
     const columnNames = columns.map(
-      (c) => this.table._.columns[c as string]._.name
+      (key) => this.table._.columns[key as string]._.name
     );
-    const placeholders = `(${columnNames.map(() => "?").join(", ")})`;
-    const valuesSql = this.dataSets.map(() => placeholders).join(", ");
+    const placeholders = `(${columns.map(() => "?").join(", ")})`;
+    const valuesSql = processedDataSets.map(() => placeholders).join(", ");
 
-    this.query += ` (${columnNames.join(", ")}) VALUES ${valuesSql}`;
+    const finalQuery = `${this.query} (${columnNames.join(
+      ", "
+    )}) VALUES ${valuesSql}`;
 
-    const params = this.dataSets.flatMap((data) =>
-      columns.map((col) => (data as any)[col])
+    const params = processedDataSets.flatMap((data) =>
+      columns.map((col) => (data as any)[col] ?? null)
     );
 
-    const result = await this.db.execute(this.query, params);
+    const result = await this.db.execute(finalQuery, params);
     return result.lastInsertId ?? 0;
   }
 }
@@ -475,6 +494,17 @@ export class UpdateQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
   }
 
   build(): { sql: string; params: any[] } {
+    const finalUpdateData = { ...this.updateData };
+
+    for (const [key, column] of Object.entries(this.table._.columns)) {
+      if (
+        finalUpdateData[key as keyof typeof finalUpdateData] === undefined &&
+        column.options.$onUpdateFn
+      ) {
+        (finalUpdateData as any)[key] = column.options.$onUpdateFn();
+      }
+    }
+
     const baseQuery = this.query;
     const whereParams = this.params;
 
@@ -486,7 +516,7 @@ export class UpdateQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
       whereClause = baseQuery.substring(whereIndex);
     }
 
-    const entries = Object.entries(this.updateData);
+    const entries = Object.entries(finalUpdateData);
     if (entries.length === 0) {
       throw new Error("Cannot execute an update query without a .set() call.");
     }
