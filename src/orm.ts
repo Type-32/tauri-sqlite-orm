@@ -133,14 +133,14 @@ export class SQLiteColumn<
     TName,
     TType,
     TMode,
-    TNotNull,
+    true,
     THasDefault,
     TAutoincrement
   > {
     return new SQLiteColumn(
       this._.name,
       this.type,
-      { ...this.options, primaryKey: true },
+      { ...this.options, primaryKey: true, notNull: true },
       this._.mode
     );
   }
@@ -241,19 +241,24 @@ export type InferSelectModel<T extends AnyTable> = {
   [K in keyof T["_"]["columns"]]: ExtractColumnType<T["_"]["columns"][K]>;
 };
 
-type RequiredColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
-  [K in keyof TColumns]: TColumns[K]["_"]["notNull"] extends true
-    ? TColumns[K]["_"]["hasDefault"] extends true
-      ? never
-      : K
+type IsOptionalOnInsert<C extends AnySQLiteColumn> =
+  C["_"]["notNull"] extends false
+    ? true
+    : C["_"]["hasDefault"] extends true
+    ? true
+    : C["_"]["autoincrement"] extends true
+    ? true
+    : false;
+
+type OptionalColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
+  [K in keyof TColumns]: IsOptionalOnInsert<TColumns[K]> extends true
+    ? K
     : never;
 }[keyof TColumns];
 
-type OptionalColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
-  [K in keyof TColumns]: TColumns[K]["_"]["notNull"] extends true
-    ? TColumns[K]["_"]["hasDefault"] extends true
-      ? K
-      : never
+type RequiredColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
+  [K in keyof TColumns]: IsOptionalOnInsert<TColumns[K]> extends true
+    ? never
     : K;
 }[keyof TColumns];
 
@@ -551,7 +556,7 @@ export class SelectQueryBuilder<
 }
 
 export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
-  private dataSets: Partial<InferInsertModel<T>>[] = [];
+  private dataSets: InferInsertModel<T>[] = [];
   private returningColumns: (keyof T["_"]["columns"])[] = [];
   private onConflictAction: "nothing" | "update" | null = null;
   private conflictTarget: AnySQLiteColumn[] = [];
@@ -562,9 +567,7 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
     this.query = `INSERT INTO ${table._.name}`;
   }
 
-  values(
-    data: Partial<InferInsertModel<T>> | Partial<InferInsertModel<T>>[]
-  ): this {
+  values(data: InferInsertModel<T> | InferInsertModel<T>[]): this {
     const dataArray = Array.isArray(data) ? data : [data];
     this.dataSets.push(...dataArray);
     return this;
@@ -596,7 +599,7 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
   }
 
   private processDefaultValues(
-    data: Partial<InferInsertModel<T>>
+    data: InferInsertModel<T>
   ): Partial<InferInsertModel<T>> {
     const finalData: Partial<InferInsertModel<T>> = { ...data };
 
