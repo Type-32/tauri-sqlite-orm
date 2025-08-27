@@ -453,30 +453,36 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
       return finalData;
     });
 
-    const allKeys = new Set<keyof T["_"]["columns"]>();
+    const groups = new Map<string, Partial<InferInsertModel<T>>[]>();
     for (const dataSet of processedDataSets) {
-      for (const key of Object.keys(dataSet)) {
-        allKeys.add(key as keyof T["_"]["columns"]);
+      const keys = Object.keys(dataSet).sort().join(",");
+      if (!groups.has(keys)) {
+        groups.set(keys, []);
       }
+      groups.get(keys)!.push(dataSet);
     }
-    const columns = Array.from(allKeys);
 
-    const columnNames = columns.map(
-      (key) => this.table._.columns[key as string]._.name
-    );
-    const placeholders = `(${columns.map(() => "?").join(", ")})`;
-    const valuesSql = processedDataSets.map(() => placeholders).join(", ");
+    let lastInsertId: number | undefined = undefined;
 
-    const finalQuery = `${this.query} (${columnNames.join(
-      ", "
-    )}) VALUES ${valuesSql}`;
+    for (const [_, dataSets] of groups) {
+      const columns = Object.keys(dataSets[0]) as (keyof T["_"]["columns"])[];
+      const columnNames = columns.map(
+        (key) => this.table._.columns[key as string]._.name
+      );
+      const placeholders = `(${columns.map(() => "?").join(", ")})`;
+      const valuesSql = dataSets.map(() => placeholders).join(", ");
+      const finalQuery = `${this.query} (${columnNames.join(
+        ", "
+      )}) VALUES ${valuesSql}`;
+      const params = dataSets.flatMap((data) =>
+        columns.map((col) => (data as any)[col] ?? null)
+      );
 
-    const params = processedDataSets.flatMap((data) =>
-      columns.map((col) => (data as any)[col] ?? null)
-    );
+      const result = await this.db.execute(finalQuery, params);
+      lastInsertId = result.lastInsertId;
+    }
 
-    const result = await this.db.execute(finalQuery, params);
-    return result.lastInsertId ?? 0;
+    return lastInsertId ?? 0;
   }
 }
 
