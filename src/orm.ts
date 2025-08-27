@@ -474,22 +474,43 @@ export class UpdateQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
     return this;
   }
 
-  async execute(): Promise<number> {
+  build(): { sql: string; params: any[] } {
+    const baseQuery = this.query;
+    const whereParams = this.params;
+
+    let tablePart = baseQuery;
+    let whereClause = "";
+    const whereIndex = baseQuery.indexOf(" WHERE ");
+    if (whereIndex !== -1) {
+      tablePart = baseQuery.substring(0, whereIndex);
+      whereClause = baseQuery.substring(whereIndex);
+    }
+
     const entries = Object.entries(this.updateData);
+    if (entries.length === 0) {
+      throw new Error("Cannot execute an update query without a .set() call.");
+    }
     const setClause = entries
       .map(([key]) => {
         const column = (this.table._.columns as any)[key];
-        if (!column)
+        if (!column) {
           throw new Error(
             `Column ${key} does not exist on table ${this.table._.name}`
           );
+        }
         return `${column._.name} = ?`;
       })
       .join(", ");
 
-    this.query += ` SET ${setClause}`;
-    this.params.push(...entries.map(([, value]) => value));
+    const setParams = entries.map(([, value]) => value);
 
+    const sql = `${tablePart} SET ${setClause}${whereClause}`;
+    const params = [...setParams, ...whereParams];
+
+    return { sql, params };
+  }
+
+  async execute(): Promise<number> {
     const { sql, params } = this.build();
     const result = await this.db.execute(sql, params);
     return result.rowsAffected;
