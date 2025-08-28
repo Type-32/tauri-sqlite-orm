@@ -1,14 +1,911 @@
 // drizzle-orm-sqlite.ts
 import Database from "@tauri-apps/plugin-sql";
-import { AnySQLiteColumn, AnyTable, InferSelectModel, Table } from "./schema";
-import {
-  DeleteQueryBuilder,
-  InsertQueryBuilder,
-  SelectBuilder,
-  SelectedFields,
-  UpdateQueryBuilder,
-  WithQueryBuilder,
-} from "./query-builder";
+
+// Core Types
+export type ColumnDataType = "TEXT" | "INTEGER" | "REAL" | "BLOB" | "BOOLEAN";
+export type Mode = "default" | "timestamp" | "timestamp_ms" | "json";
+
+// Column Value Types Mapping
+type ColumnValueTypes<
+  TType extends ColumnDataType,
+  TMode extends Mode
+> = TType extends "TEXT"
+  ? string
+  : TType extends "INTEGER"
+  ? TMode extends "timestamp" | "timestamp_ms"
+    ? Date
+    : number
+  : TType extends "REAL"
+  ? number
+  : TType extends "BOOLEAN"
+  ? boolean
+  : TType extends "BLOB"
+  ? Uint8Array
+  : never;
+
+// Column Options
+export interface ColumnOptions<TData> {
+  notNull?: boolean;
+  default?: TData;
+  $defaultFn?: () => TData;
+  primaryKey?: boolean;
+  autoincrement?: boolean;
+  unique?: boolean;
+  references?: {
+    table: AnyTable;
+    column: AnySQLiteColumn;
+  };
+  mode?: Mode;
+  $onUpdateFn?: () => TData;
+}
+
+// Extract column value type
+type ExtractColumnType<T extends AnySQLiteColumn> = T extends SQLiteColumn<
+  infer _,
+  infer TType,
+  infer TMode,
+  infer TNotNull,
+  infer THasDefault
+>
+  ? THasDefault extends true
+    ? TNotNull extends true
+      ? ColumnValueTypes<TType, TMode>
+      : ColumnValueTypes<TType, TMode> | null | undefined
+    : TNotNull extends true
+    ? ColumnValueTypes<TType, TMode>
+    : ColumnValueTypes<TType, TMode> | null | undefined
+  : never;
+
+// Column class
+export class SQLiteColumn<
+  TName extends string = string,
+  TType extends ColumnDataType = ColumnDataType,
+  TMode extends Mode = "default",
+  TNotNull extends boolean = false,
+  THasDefault extends boolean = false,
+  TAutoincrement extends boolean = false
+> {
+  _: {
+    name: TName;
+    dataType: TType;
+    mode: TMode;
+    notNull: TNotNull;
+    hasDefault: THasDefault;
+    autoincrement: TAutoincrement;
+  };
+
+  constructor(
+    name: TName,
+    public type: TType,
+    public options: ColumnOptions<ColumnValueTypes<TType, TMode>> = {},
+    mode?: TMode
+  ) {
+    this._ = {
+      name,
+      dataType: type,
+      mode: (mode || "default") as TMode,
+      notNull: (options.notNull ?? false) as TNotNull,
+      hasDefault: (options.default !== undefined ||
+        options.$defaultFn !== undefined) as THasDefault,
+      autoincrement: (options.autoincrement ?? false) as TAutoincrement,
+    };
+  }
+
+  notNull(): SQLiteColumn<
+    TName,
+    TType,
+    TMode,
+    true,
+    THasDefault,
+    TAutoincrement
+  > {
+    return new SQLiteColumn(
+      this._.name,
+      this.type,
+      { ...this.options, notNull: true },
+      this._.mode
+    );
+  }
+
+  default(
+    value: ColumnValueTypes<TType, TMode>
+  ): SQLiteColumn<TName, TType, TMode, TNotNull, true, TAutoincrement> {
+    return new SQLiteColumn(
+      this._.name,
+      this.type,
+      { ...this.options, default: value },
+      this._.mode
+    );
+  }
+
+  $defaultFn(
+    fn: () => ColumnValueTypes<TType, TMode>
+  ): SQLiteColumn<TName, TType, TMode, TNotNull, true, TAutoincrement> {
+    return new SQLiteColumn(
+      this._.name,
+      this.type,
+      { ...this.options, $defaultFn: fn },
+      this._.mode
+    );
+  }
+
+  primaryKey(): SQLiteColumn<
+    TName,
+    TType,
+    TMode,
+    true,
+    THasDefault,
+    TAutoincrement
+  > {
+    return new SQLiteColumn(
+      this._.name,
+      this.type,
+      { ...this.options, primaryKey: true, notNull: true },
+      this._.mode
+    );
+  }
+
+  autoincrement(): SQLiteColumn<
+    TName,
+    TType,
+    TMode,
+    TNotNull,
+    THasDefault,
+    true
+  > {
+    return new SQLiteColumn(
+      this._.name,
+      this.type,
+      { ...this.options, autoincrement: true },
+      this._.mode
+    );
+  }
+
+  unique(): SQLiteColumn<
+    TName,
+    TType,
+    TMode,
+    TNotNull,
+    THasDefault,
+    TAutoincrement
+  > {
+    return new SQLiteColumn(
+      this._.name,
+      this.type,
+      { ...this.options, unique: true },
+      this._.mode
+    );
+  }
+
+  references<T extends AnyTable, K extends keyof T["_"]["columns"] & string>(
+    ref: T,
+    column: K
+  ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement> {
+    return new SQLiteColumn(
+      this._.name,
+      this.type,
+      {
+        ...this.options,
+        references: {
+          table: ref,
+          column: ref._.columns[column],
+        },
+      },
+      this._.mode
+    );
+  }
+
+  $onUpdateFn(
+    fn: () => ColumnValueTypes<TType, TMode>
+  ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement> {
+    return new SQLiteColumn(
+      this._.name,
+      this.type,
+      { ...this.options, $onUpdateFn: fn },
+      this._.mode
+    );
+  }
+
+  as(
+    alias: string
+  ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement> {
+    // This is a placeholder for alias functionality
+    return this;
+  }
+}
+
+// Column helpers
+export const text = <TName extends string>(name: TName) =>
+  new SQLiteColumn(name, "TEXT");
+
+export const integer = <TName extends string, TMode extends Mode = "default">(
+  name: TName,
+  config?: { mode?: TMode }
+) => new SQLiteColumn(name, "INTEGER", {}, config?.mode || "default");
+
+export const real = <TName extends string>(name: TName) =>
+  new SQLiteColumn(name, "REAL");
+
+export const blob = <TName extends string>(name: TName) =>
+  new SQLiteColumn(name, "BLOB");
+
+export const boolean = <TName extends string>(name: TName) =>
+  new SQLiteColumn(name, "BOOLEAN");
+
+// Table Types
+export type AnySQLiteColumn = SQLiteColumn<any, any, any, any, any, any>;
+export type AnyTable = Table<Record<string, AnySQLiteColumn>, string>;
+
+// Infer Model Types
+export type InferSelectModel<T extends AnyTable> = {
+  [K in keyof T["_"]["columns"]]: ExtractColumnType<T["_"]["columns"][K]>;
+};
+
+type IsOptionalOnInsert<C extends AnySQLiteColumn> =
+  C["_"]["notNull"] extends false
+    ? true
+    : C["_"]["hasDefault"] extends true
+    ? true
+    : C["_"]["autoincrement"] extends true
+    ? true
+    : false;
+
+type OptionalColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
+  [K in keyof TColumns]: IsOptionalOnInsert<TColumns[K]> extends true
+    ? K
+    : never;
+}[keyof TColumns];
+
+type RequiredColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
+  [K in keyof TColumns]: IsOptionalOnInsert<TColumns[K]> extends true
+    ? never
+    : K;
+}[keyof TColumns];
+
+export type InferInsertModel<T extends AnyTable> = {
+  [K in RequiredColumns<T["_"]["columns"]>]: ExtractColumnType<
+    T["_"]["columns"][K]
+  >;
+} & {
+  [K in OptionalColumns<T["_"]["columns"]>]?: ExtractColumnType<
+    T["_"]["columns"][K]
+  >;
+};
+
+// Table Definition
+export class Table<
+  TColumns extends Record<string, AnySQLiteColumn>,
+  TTableName extends string
+> {
+  _: {
+    name: TTableName;
+    columns: TColumns;
+  };
+
+  constructor(name: TTableName, columns: TColumns) {
+    this._ = {
+      name,
+      columns,
+    };
+  }
+}
+
+export const sqliteTable = <
+  TTableName extends string,
+  TColumns extends Record<string, AnySQLiteColumn>
+>(
+  tableName: TTableName,
+  columns: TColumns
+): Table<TColumns, TTableName> => {
+  return new Table(tableName, columns);
+};
+
+// Query Helpers
+export type SQLCondition = {
+  sql: string;
+  params: any[];
+};
+
+export const eq = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
+  sql: `${column._.name} = ?`,
+  params: [value],
+});
+
+export const and = (...conditions: SQLCondition[]): SQLCondition => ({
+  sql: conditions.map((c) => `(${c.sql})`).join(" AND "),
+  params: conditions.flatMap((c) => c.params),
+});
+
+export const or = (...conditions: SQLCondition[]): SQLCondition => ({
+  sql: conditions.map((c) => `(${c.sql})`).join(" OR "),
+  params: conditions.flatMap((c) => c.params),
+});
+
+export const not = (condition: SQLCondition): SQLCondition => ({
+  sql: `NOT (${condition.sql})`,
+  params: condition.params,
+});
+
+export const gt = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
+  sql: `${column._.name} > ?`,
+  params: [value],
+});
+
+export const gte = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
+  sql: `${column._.name} >= ?`,
+  params: [value],
+});
+
+export const lt = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
+  sql: `${column._.name} < ?`,
+  params: [value],
+});
+
+export const lte = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
+  sql: `${column._.name} <= ?`,
+  params: [value],
+});
+
+export const like = (
+  column: AnySQLiteColumn,
+  pattern: string
+): SQLCondition => ({
+  sql: `${column._.name} LIKE ?`,
+  params: [pattern],
+});
+
+export const isNull = (column: AnySQLiteColumn): SQLCondition => ({
+  sql: `${column._.name} IS NULL`,
+  params: [],
+});
+
+export const isNotNull = (column: AnySQLiteColumn): SQLCondition => ({
+  sql: `${column._.name} IS NOT NULL`,
+  params: [],
+});
+
+export const inArray = <T>(
+  column: AnySQLiteColumn,
+  values: T[]
+): SQLCondition => ({
+  sql: `${column._.name} IN (${values.map(() => "?").join(",")})`,
+  params: values,
+});
+
+export const asc = (column: AnySQLiteColumn) => ({
+  sql: `${column._.name} ASC`,
+  params: [],
+});
+
+export const desc = (column: AnySQLiteColumn) => ({
+  sql: `${column._.name} DESC`,
+  params: [],
+});
+
+// Aggregation functions
+export const count = (column?: AnySQLiteColumn): SQLCondition => ({
+  sql: `COUNT(${column ? column._.name : "*"})`,
+  params: [],
+});
+
+export const countDistinct = (column: AnySQLiteColumn): SQLCondition => ({
+  sql: `COUNT(DISTINCT ${column._.name})`,
+  params: [],
+});
+
+export const sum = (column: AnySQLiteColumn): SQLCondition => ({
+  sql: `SUM(${column._.name})`,
+  params: [],
+});
+
+export const avg = (column: AnySQLiteColumn): SQLCondition => ({
+  sql: `AVG(${column._.name})`,
+  params: [],
+});
+
+export const max = (column: AnySQLiteColumn): SQLCondition => ({
+  sql: `MAX(${column._.name})`,
+  params: [],
+});
+
+export const min = (column: AnySQLiteColumn): SQLCondition => ({
+  sql: `MIN(${column._.name})`,
+  params: [],
+});
+
+// SQL template tag
+export const sql = <T = unknown>(
+  strings: TemplateStringsArray,
+  ...values: any[]
+): { sql: string; params: any[]; mapWith?: (value: any) => T } => {
+  const queryParts: string[] = [];
+  const params: any[] = [];
+
+  strings.forEach((str, i) => {
+    queryParts.push(str);
+    if (values[i] !== undefined) {
+      if (typeof values[i] === "object" && values[i].sql) {
+        queryParts.push(values[i].sql);
+        params.push(...values[i].params);
+      } else {
+        queryParts.push("?");
+        params.push(values[i]);
+      }
+    }
+  });
+
+  return {
+    sql: queryParts.join(""),
+    params,
+  };
+};
+
+// Query Builders
+class BaseQueryBuilder {
+  protected query: string = "";
+  protected params: any[] = [];
+
+  constructor(protected db: Database) {}
+
+  where(condition: SQLCondition): this {
+    this.query += ` WHERE ${condition.sql}`;
+    this.params.push(...condition.params);
+    return this;
+  }
+
+  orderBy(
+    column: AnySQLiteColumn | { sql: string; params: any[] },
+    direction: "ASC" | "DESC" = "ASC"
+  ): this {
+    if ("sql" in column) {
+      this.query += ` ORDER BY ${column.sql} ${direction}`;
+      this.params.push(...column.params);
+    } else {
+      this.query += ` ORDER BY ${column._.name} ${direction}`;
+    }
+    return this;
+  }
+
+  limit(count: number): this {
+    this.query += ` LIMIT ${count}`;
+    return this;
+  }
+
+  offset(count: number): this {
+    this.query += ` OFFSET ${count}`;
+    return this;
+  }
+
+  build(): { sql: string; params: any[] } {
+    return {
+      sql: this.query,
+      params: this.params,
+    };
+  }
+}
+
+export class SelectQueryBuilder<
+  TTable extends AnyTable,
+  TSelectedColumns extends
+    | (keyof TTable["_"]["columns"])[]
+    | undefined = undefined
+> extends BaseQueryBuilder {
+  private isDistinct = false;
+  private groupByColumns: AnySQLiteColumn[] = [];
+  private havingCondition: SQLCondition | null = null;
+
+  constructor(
+    db: Database,
+    private table: TTable,
+    private columns?: TSelectedColumns
+  ) {
+    super(db);
+    const columnNames = columns
+      ? columns.map((c) => table._.columns[c as string]._.name)
+      : ["*"];
+
+    this.query = `SELECT ${columnNames.join(", ")} FROM ${table._.name}`;
+  }
+
+  distinct(): this {
+    this.isDistinct = true;
+    this.query = this.query.replace("SELECT", "SELECT DISTINCT");
+    return this;
+  }
+
+  groupBy(...columns: AnySQLiteColumn[]): this {
+    this.groupByColumns.push(...columns);
+    const columnNames = columns.map((col) => col._.name).join(", ");
+    this.query += ` GROUP BY ${columnNames}`;
+    return this;
+  }
+
+  having(condition: SQLCondition): this {
+    this.havingCondition = condition;
+    this.query += ` HAVING ${condition.sql}`;
+    this.params.push(...condition.params);
+    return this;
+  }
+
+  async execute(): Promise<
+    TSelectedColumns extends (keyof TTable["_"]["columns"])[]
+      ? Pick<InferSelectModel<TTable>, TSelectedColumns[number]>[]
+      : InferSelectModel<TTable>[]
+  > {
+    const { sql, params } = this.build();
+    return this.db.select(sql, params) as any;
+  }
+
+  async all(): Promise<
+    TSelectedColumns extends (keyof TTable["_"]["columns"])[]
+      ? Pick<InferSelectModel<TTable>, TSelectedColumns[number]>[]
+      : InferSelectModel<TTable>[]
+  > {
+    return this.execute();
+  }
+
+  async get(): Promise<
+    TSelectedColumns extends (keyof TTable["_"]["columns"])[]
+      ? Pick<InferSelectModel<TTable>, TSelectedColumns[number]> | undefined
+      : InferSelectModel<TTable> | undefined
+  > {
+    this.limit(1);
+    const result = await this.execute();
+    return result[0] as any;
+  }
+}
+
+export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
+  private dataSets: InferInsertModel<T>[] = [];
+  private returningColumns: (keyof T["_"]["columns"])[] = [];
+  private onConflictAction: "nothing" | "update" | null = null;
+  private conflictTarget: AnySQLiteColumn[] = [];
+  private updateSet: Partial<InferInsertModel<T>> = {};
+
+  constructor(db: Database, private table: T) {
+    super(db);
+    this.query = `INSERT INTO ${table._.name}`;
+  }
+
+  values(data: InferInsertModel<T> | InferInsertModel<T>[]): this {
+    const dataArray = Array.isArray(data) ? data : [data];
+    this.dataSets.push(...dataArray);
+    return this;
+  }
+
+  returning(...columns: (keyof T["_"]["columns"])[]): this {
+    this.returningColumns = columns;
+    return this;
+  }
+
+  onConflictDoNothing(target?: AnySQLiteColumn | AnySQLiteColumn[]): this {
+    this.onConflictAction = "nothing";
+    if (target) {
+      this.conflictTarget = Array.isArray(target) ? target : [target];
+    }
+    return this;
+  }
+
+  onConflictDoUpdate(config: {
+    target: AnySQLiteColumn | AnySQLiteColumn[];
+    set: Partial<InferInsertModel<T>>;
+  }): this {
+    this.onConflictAction = "update";
+    this.conflictTarget = Array.isArray(config.target)
+      ? config.target
+      : [config.target];
+    this.updateSet = config.set;
+    return this;
+  }
+
+  private processDefaultValues(
+    data: InferInsertModel<T>
+  ): Partial<InferInsertModel<T>> {
+    const finalData: Partial<InferInsertModel<T>> = { ...data };
+
+    for (const [key, column] of Object.entries(this.table._.columns)) {
+      const typedKey = key as keyof T["_"]["columns"];
+
+      if ((finalData as any)[typedKey] === undefined) {
+        if (column.options.$defaultFn) {
+          (finalData as any)[typedKey] = column.options.$defaultFn();
+        }
+      }
+    }
+
+    return finalData;
+  }
+
+  private buildConflictClause(): string {
+    if (!this.onConflictAction) return "";
+
+    let clause = " ON CONFLICT";
+
+    if (this.conflictTarget.length > 0) {
+      const targetNames = this.conflictTarget
+        .map((col) => col._.name)
+        .join(", ");
+      clause += ` (${targetNames})`;
+    }
+
+    if (this.onConflictAction === "nothing") {
+      clause += " DO NOTHING";
+    } else if (this.onConflictAction === "update") {
+      const setEntries = Object.entries(this.updateSet);
+      if (setEntries.length > 0) {
+        const setClause = setEntries.map(([key]) => `${key} = ?`).join(", ");
+        clause += ` DO UPDATE SET ${setClause}`;
+      }
+    }
+
+    return clause;
+  }
+
+  async execute(): Promise<
+    T extends AnyTable ? (InferSelectModel<T> & Record<string, any>)[] : never
+  > {
+    if (this.dataSets.length === 0) {
+      throw new Error("No data provided for insert");
+    }
+
+    const processedDataSets = this.dataSets.map((data) =>
+      this.processDefaultValues(data)
+    );
+
+    // Group data by column sets for batch insertion
+    const groups = new Map<string, Partial<InferInsertModel<T>>[]>();
+    for (const dataSet of processedDataSets) {
+      const keys = Object.keys(dataSet).sort().join(",");
+      if (!groups.has(keys)) {
+        groups.set(keys, []);
+      }
+      groups.get(keys)!.push(dataSet);
+    }
+
+    let results: any[] = [];
+    let lastInsertId: number | undefined;
+    let rowsAffected = 0;
+
+    for (const [_, dataSets] of groups) {
+      const columns = Object.keys(dataSets[0]) as (keyof T["_"]["columns"])[];
+      const columnNames = columns.map(
+        (key) => this.table._.columns[key as string]._.name
+      );
+      const placeholders = `(${columns.map(() => "?").join(", ")})`;
+      const valuesSql = dataSets.map(() => placeholders).join(", ");
+      const conflictClause = this.buildConflictClause();
+
+      const finalQuery = `${this.query} (${columnNames.join(
+        ", "
+      )}) VALUES ${valuesSql}${conflictClause}`;
+
+      const params = dataSets.flatMap((data) =>
+        columns.map((col) => (data as any)[col] ?? null)
+      );
+
+      // Add conflict update params
+      if (this.onConflictAction === "update") {
+        const setValues = Object.entries(this.updateSet).map(
+          ([, value]) => value
+        );
+        params.push(...setValues);
+      }
+
+      if (this.returningColumns.length > 0) {
+        const returningNames = this.returningColumns
+          .map((col) => this.table._.columns[col as string]._.name)
+          .join(", ");
+        const queryWithReturning = `${finalQuery} RETURNING ${returningNames}`;
+        const rows = await this.db.select(queryWithReturning, params);
+        results = results.concat(rows);
+      } else {
+        const result = await this.db.execute(finalQuery, params);
+        lastInsertId = result.lastInsertId;
+        rowsAffected += result.rowsAffected;
+      }
+    }
+
+    if (this.returningColumns.length > 0) {
+      return results as any;
+    }
+
+    return [{ lastInsertId, rowsAffected }] as any;
+  }
+
+  async returningAll(): Promise<InferSelectModel<T>[]> {
+    const allColumns = Object.keys(
+      this.table._.columns
+    ) as (keyof T["_"]["columns"])[];
+    return this.returning(...allColumns).execute();
+  }
+}
+
+export class UpdateQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
+  private updateData: Partial<InferInsertModel<T>> = {};
+  private returningColumns: (keyof T["_"]["columns"])[] = [];
+
+  constructor(db: Database, private table: T) {
+    super(db);
+    this.query = `UPDATE ${table._.name}`;
+  }
+
+  set(data: Partial<InferInsertModel<T>>): this {
+    this.updateData = { ...this.updateData, ...data };
+    return this;
+  }
+
+  returning(...columns: (keyof T["_"]["columns"])[]): this {
+    this.returningColumns = columns;
+    return this;
+  }
+
+  private buildUpdateClause(): { sql: string; params: any[] } {
+    const finalUpdateData = { ...this.updateData };
+
+    // Apply $onUpdateFn for columns that don't have explicit values
+    for (const [key, column] of Object.entries(this.table._.columns)) {
+      const typedKey = key as keyof T["_"]["columns"];
+
+      if (
+        (finalUpdateData as any)[typedKey] === undefined &&
+        column.options.$onUpdateFn
+      ) {
+        (finalUpdateData as any)[typedKey] = column.options.$onUpdateFn();
+      }
+    }
+
+    const baseQuery = this.query;
+    const whereParams = this.params;
+
+    let tablePart = baseQuery;
+    let whereClause = "";
+    const whereIndex = baseQuery.indexOf(" WHERE ");
+    if (whereIndex !== -1) {
+      tablePart = baseQuery.substring(0, whereIndex);
+      whereClause = baseQuery.substring(whereIndex);
+    }
+
+    const entries = Object.entries(finalUpdateData);
+    if (entries.length === 0) {
+      throw new Error("Cannot execute an update query without a .set() call.");
+    }
+
+    const setClause = entries
+      .map(([key]) => {
+        const column = (this.table._.columns as any)[key];
+        if (!column) {
+          throw new Error(
+            `Column ${key} does not exist on table ${this.table._.name}`
+          );
+        }
+        return `${column._.name} = ?`;
+      })
+      .join(", ");
+
+    const setParams = entries.map(([, value]) => value);
+
+    const sql = `${tablePart} SET ${setClause}${whereClause}`;
+    const params = [...setParams, ...whereParams];
+
+    return { sql, params };
+  }
+
+  async execute(): Promise<
+    T extends AnyTable ? (InferSelectModel<T> & Record<string, any>)[] : never
+  > {
+    const { sql: updateSql, params } = this.buildUpdateClause();
+
+    if (this.returningColumns.length > 0) {
+      const returningNames = this.returningColumns
+        .map((col) => this.table._.columns[col as string]._.name)
+        .join(", ");
+      const sqlWithReturning = `${updateSql} RETURNING ${returningNames}`;
+      return this.db.select(sqlWithReturning, params) as any;
+    } else {
+      const result = await this.db.execute(updateSql, params);
+      return [{ rowsAffected: result.rowsAffected }] as any;
+    }
+  }
+
+  async returningAll(): Promise<InferSelectModel<T>[]> {
+    const allColumns = Object.keys(
+      this.table._.columns
+    ) as (keyof T["_"]["columns"])[];
+    return this.returning(...allColumns).execute();
+  }
+}
+
+export class DeleteQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
+  private returningColumns: (keyof T["_"]["columns"])[] = [];
+
+  constructor(db: Database, private table: T) {
+    super(db);
+    this.query = `DELETE FROM ${table._.name}`;
+  }
+
+  returning(...columns: (keyof T["_"]["columns"])[]): this {
+    this.returningColumns = columns;
+    return this;
+  }
+
+  async execute(): Promise<
+    T extends AnyTable ? (InferSelectModel<T> & Record<string, any>)[] : never
+  > {
+    const { sql, params } = this.build();
+
+    if (this.returningColumns.length > 0) {
+      const returningNames = this.returningColumns
+        .map((col) => this.table._.columns[col as string]._.name)
+        .join(", ");
+      const sqlWithReturning = `${sql} RETURNING ${returningNames}`;
+      return this.db.select(sqlWithReturning, params) as any;
+    } else {
+      const result = await this.db.execute(sql, params);
+      return [{ rowsAffected: result.rowsAffected }] as any;
+    }
+  }
+
+  async returningAll(): Promise<InferSelectModel<T>[]> {
+    const allColumns = Object.keys(
+      this.table._.columns
+    ) as (keyof T["_"]["columns"])[];
+    return this.returning(...allColumns).execute();
+  }
+}
+
+// With clause support
+export class WithQueryBuilder {
+  private ctes: Array<{ alias: string; query: string; params: any[] }> = [];
+
+  constructor(private db: Database) {}
+
+  with(alias: string, query: { sql: string; params: any[] }): this {
+    this.ctes.push({ alias, query: query.sql, params: query.params });
+    return this;
+  }
+
+  select<
+    T extends AnyTable,
+    C extends (keyof T["_"]["columns"])[] | undefined = undefined
+  >(table: T, columns?: C): SelectQueryBuilder<T, C> {
+    const builder = new SelectQueryBuilder(this.db, table, columns);
+    this.applyWithClause(builder);
+    return builder;
+  }
+
+  insert<T extends AnyTable>(table: T): InsertQueryBuilder<T> {
+    const builder = new InsertQueryBuilder(this.db, table);
+    this.applyWithClause(builder);
+    return builder;
+  }
+
+  update<T extends AnyTable>(table: T): UpdateQueryBuilder<T> {
+    const builder = new UpdateQueryBuilder(this.db, table);
+    this.applyWithClause(builder);
+    return builder;
+  }
+
+  delete<T extends AnyTable>(table: T): DeleteQueryBuilder<T> {
+    const builder = new DeleteQueryBuilder(this.db, table);
+    this.applyWithClause(builder);
+    return builder;
+  }
+
+  private applyWithClause(builder: BaseQueryBuilder): void {
+    if (this.ctes.length > 0) {
+      const cteSql = this.ctes
+        .map((cte) => `${cte.alias} AS (${cte.query})`)
+        .join(", ");
+      builder["query"] = `WITH ${cteSql} ${builder["query"]}`;
+
+      // Add CTE params to the beginning of the params array
+      builder["params"] = [
+        ...this.ctes.flatMap((cte) => cte.params),
+        ...builder["params"],
+      ];
+    }
+  }
+}
 
 // Main ORM Class
 export class TauriORM {
@@ -83,14 +980,11 @@ export class TauriORM {
     }
   }
 
-  select(): SelectBuilder<undefined>;
-  select<TSelection extends SelectedFields>(
-    selection: TSelection
-  ): SelectBuilder<TSelection>;
-  select<TSelection extends SelectedFields>(
-    selection?: TSelection
-  ): SelectBuilder<TSelection | undefined> {
-    return new SelectBuilder(this.db, selection);
+  select<
+    T extends AnyTable,
+    C extends (keyof T["_"]["columns"])[] | undefined = undefined
+  >(table: T, columns?: C): SelectQueryBuilder<T, C> {
+    return new SelectQueryBuilder(this.db, table, columns);
   }
 
   insert<T extends AnyTable>(table: T): InsertQueryBuilder<T> {
@@ -259,4 +1153,17 @@ export const relations = <
       return new ManyRelation(table);
     },
   });
+};
+
+// Helper functions
+export const getTableColumns = <T extends AnyTable>(table: T) => {
+  return table._.columns;
+};
+
+export const alias = <T extends AnyTable>(
+  table: T,
+  alias: string
+): Table<T["_"]["columns"], T["_"]["name"]> => {
+  // This is a placeholder for alias functionality
+  return table as any;
 };
