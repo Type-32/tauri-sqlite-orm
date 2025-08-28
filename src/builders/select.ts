@@ -18,7 +18,7 @@ export class SelectQueryBuilder<
         condition: SQLCondition
         alias: string
     }> = []
-    private includeRelations: Record<string, boolean> = {}
+    private includeRelations: Partial<Record<keyof TTable['relations'], boolean>> = {}
     private selectedTableAlias: string
     private selectedColumns: string[] = []
 
@@ -65,7 +65,7 @@ export class SelectQueryBuilder<
         return this
     }
 
-    include(relations: Record<string, boolean>): this {
+    include(relations: Partial<Record<keyof TTable['relations'], boolean>>): this {
         this.includeRelations = { ...this.includeRelations, ...relations }
         return this
     }
@@ -85,7 +85,12 @@ export class SelectQueryBuilder<
             if (!include) continue
 
             const relation = this.table.relations[relationName]
-            if (!relation) continue
+            if (!relation) {
+                console.warn(
+                    `[Tauri-ORM] Relation "${relationName}" not found on table "${this.table._.name}". Skipping include.`
+                )
+                continue
+            }
 
             const foreignTable = relation.foreignTable
             const foreignAlias = `${this.selectedTableAlias}_${relationName}`
