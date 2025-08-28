@@ -2,7 +2,7 @@
 import {SQLiteColumn} from "./orm";
 import {Mode} from "./types";
 
-export const columnHelpers = <TName extends string>(name: TName) =>
+export const text = <TName extends string>(name: TName) =>
     new SQLiteColumn(name, "TEXT");
 export const integer = <TName extends string, TMode extends Mode = "default">(
     name: TName,
