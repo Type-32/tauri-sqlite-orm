@@ -20,22 +20,22 @@ export class SelectQueryBuilder<
     }> = []
     private includeRelations: Record<string, boolean> = {}
     private selectedTableAlias: string
+    private selectedColumns: string[] = []
 
     constructor(db: Database, private table: TTable, private columns?: TSelectedColumns) {
         super(db)
         this.selectedTableAlias = table._.name
 
         // Build initial SELECT with table alias to avoid ambiguity
-        const columnNames = columns
+        this.selectedColumns = columns
             ? columns.map((c) => `${this.selectedTableAlias}.${table._.columns[c as string]._.name}`)
             : [`${this.selectedTableAlias}.*`]
 
-        this.query = `SELECT ${columnNames.join(', ')} FROM ${table._.name} ${this.selectedTableAlias}`
+        this.query = `FROM ${table._.name} ${this.selectedTableAlias}`
     }
 
     distinct(): this {
         this.isDistinct = true
-        this.query = this.query.replace('SELECT', 'SELECT DISTINCT')
         return this
     }
 
@@ -55,11 +55,13 @@ export class SelectQueryBuilder<
 
     leftJoin<T extends AnyTable>(table: T, condition: SQLCondition, alias: string): this {
         this.joins.push({ type: 'LEFT', table, condition, alias })
+        this.selectedColumns.push(`${alias}.*`)
         return this
     }
 
     innerJoin<T extends AnyTable>(table: T, condition: SQLCondition, alias: string): this {
         this.joins.push({ type: 'INNER', table, condition, alias })
+        this.selectedColumns.push(`${alias}.*`)
         return this
     }
 
@@ -87,6 +89,7 @@ export class SelectQueryBuilder<
 
             const foreignTable = relation.foreignTable
             const foreignAlias = `${this.selectedTableAlias}_${relationName}`
+            this.selectedColumns.push(`${foreignAlias}.*`)
 
             if (relation.type === 'one' && relation.fields && relation.references) {
                 // One-to-one or many-to-one: this table references foreign table
@@ -122,14 +125,6 @@ export class SelectQueryBuilder<
 
                     sql += ` LEFT JOIN ${foreignTable._.name} ${foreignAlias} ON ${condition.sql}`
                     params.push(...condition.params)
-
-                    // Also select the related data
-                    this.query = this.query
-                        .replace('SELECT ', `SELECT ${this.selectedTableAlias}.*, ${foreignAlias}.* `)
-                        .replace(
-                            `SELECT ${this.selectedTableAlias}.*, `,
-                            `SELECT ${this.selectedTableAlias}.*, ${foreignAlias}.*, `
-                        )
                 }
             }
         }
@@ -140,11 +135,14 @@ export class SelectQueryBuilder<
     // Enhanced execute method that handles relation data mapping
     async execute(): Promise<any[]> {
         const { sql: joinSql, params: joinParams } = this.buildJoins()
+
+        const distinct = this.isDistinct ? 'DISTINCT ' : ''
+        this.query = `SELECT ${distinct}${this.selectedColumns.join(', ')} ${this.query}`
         this.query += joinSql
         this.params.push(...joinParams)
 
         const { sql, params } = this.build()
-        // console.log('Executing SQL:', sql, 'with params:', params) // Debug log
+        console.log('Executing SQL:', sql, 'with params:', params) // Debug log
 
         const rawResults = await this.db.select<any[]>(sql, params)
 
