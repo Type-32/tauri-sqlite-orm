@@ -26,10 +26,13 @@ export class SelectQueryBuilder<
         super(db)
         this.selectedTableAlias = table._.name
 
-        // Build initial SELECT with table alias to avoid ambiguity
-        this.selectedColumns = columns
-            ? columns.map((c) => `${this.selectedTableAlias}.${table._.columns[c as string]._.name}`)
-            : [`${this.selectedTableAlias}.*`]
+        const selected = columns
+            ? columns.map((c) => this.table._.columns[c as string])
+            : Object.values(this.table._.columns)
+
+        this.selectedColumns = selected.map(
+            (col) => `${this.selectedTableAlias}.${col._.name} AS "${this.selectedTableAlias}.${col._.name}"`
+        )
 
         this.query = `FROM ${table._.name} ${this.selectedTableAlias}`
     }
@@ -55,13 +58,19 @@ export class SelectQueryBuilder<
 
     leftJoin<T extends AnyTable>(table: T, condition: SQLCondition, alias: string): this {
         this.joins.push({ type: 'LEFT', table, condition, alias })
-        this.selectedColumns.push(`${alias}.*`)
+        const aliasedColumns = Object.values(table._.columns).map(
+            (col) => `${alias}.${col._.name} AS "${alias}.${col._.name}"`
+        )
+        this.selectedColumns.push(...aliasedColumns)
         return this
     }
 
     innerJoin<T extends AnyTable>(table: T, condition: SQLCondition, alias: string): this {
         this.joins.push({ type: 'INNER', table, condition, alias })
-        this.selectedColumns.push(`${alias}.*`)
+        const aliasedColumns = Object.values(table._.columns).map(
+            (col) => `${alias}.${col._.name} AS "${alias}.${col._.name}"`
+        )
+        this.selectedColumns.push(...aliasedColumns)
         return this
     }
 
@@ -94,7 +103,11 @@ export class SelectQueryBuilder<
 
             const foreignTable = relation.foreignTable
             const foreignAlias = `${this.selectedTableAlias}_${relationName}`
-            this.selectedColumns.push(`${foreignAlias}.*`)
+
+            const aliasedColumns = Object.values(foreignTable._.columns).map(
+                (col) => `${foreignAlias}.${col._.name} AS "${foreignAlias}.${col._.name}"`
+            )
+            this.selectedColumns.push(...aliasedColumns)
 
             if (relation.type === 'one' && relation.fields && relation.references) {
                 // One-to-one or many-to-one: this table references foreign table
@@ -151,13 +164,29 @@ export class SelectQueryBuilder<
 
         const rawResults = await this.db.select<any[]>(sql, params)
 
-        // Process results to group related data
-        if (Object.keys(this.includeRelations).some((key) => this.includeRelations[key])) {
-            const processed = this.processRelationResults(rawResults)
-            return processed
+        const hasIncludes = Object.values(this.includeRelations).some((i) => i)
+        if (hasIncludes) {
+            return this.processRelationResults(rawResults)
         }
 
-        return rawResults
+        const hasJoins = this.joins.length > 0
+        if (hasJoins) {
+            return rawResults
+        }
+
+        // Strip prefixes for simple queries
+        const prefix = `${this.selectedTableAlias}.`
+        return rawResults.map((row) => {
+            const newRow: Record<string, any> = {}
+            for (const key in row) {
+                if (key.startsWith(prefix)) {
+                    newRow[key.substring(prefix.length)] = row[key]
+                } else {
+                    newRow[key] = row[key]
+                }
+            }
+            return newRow
+        })
     }
 
     private processRelationResults(rawResults: any[]): any[] {
