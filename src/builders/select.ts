@@ -30,8 +30,7 @@ export class SelectQueryBuilder<
             ? columns.map((c) => `${this.selectedTableAlias}.${table._.columns[c as string]._.name}`)
             : [`${this.selectedTableAlias}.*`]
 
-        this.query = `SELECT ${columnNames.join(', ')}
-                      FROM ${table._.name} ${this.selectedTableAlias}`
+        this.query = `SELECT ${columnNames.join(', ')} FROM ${table._.name} ${this.selectedTableAlias}`
     }
 
     distinct(): this {
@@ -145,7 +144,7 @@ export class SelectQueryBuilder<
         this.params.push(...joinParams)
 
         const { sql, params } = this.build()
-        console.log('Executing SQL:', sql, 'with params:', params) // Debug log
+        // console.log('Executing SQL:', sql, 'with params:', params) // Debug log
 
         const rawResults = await this.db.select<any[]>(sql, params)
 
