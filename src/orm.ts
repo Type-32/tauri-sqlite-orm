@@ -215,33 +215,6 @@ export class TauriORM {
                     this.tables.set(value._.name, value)
                 }
             }
-
-            // Second pass: register relations
-            for (const [key, value] of Object.entries(schema)) {
-                if (!(value instanceof Table) && typeof value === 'object') {
-                    // This is a relations object
-                    const tableName = key.replace('Relations', '')
-                    const table = Array.from(this.tables.values()).find((t) => t._.name === tableName)
-
-                    if (table) {
-                        for (const [relName, rel] of Object.entries(value)) {
-                            if (rel instanceof OneRelation) {
-                                table.relations[relName] = {
-                                    type: 'one',
-                                    foreignTable: rel.foreignTable,
-                                    fields: rel.config?.fields,
-                                    references: rel.config?.references,
-                                }
-                            } else if (rel instanceof ManyRelation) {
-                                table.relations[relName] = {
-                                    type: 'many',
-                                    foreignTable: rel.foreignTable,
-                                }
-                            }
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -457,18 +430,47 @@ export class ManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
     }
 }
 
+type InferRelations<R extends Record<string, Relation>> = {
+    [K in keyof R]: R[K] extends OneRelation<infer T>
+        ? { type: 'one'; foreignTable: T; fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
+        : R[K] extends ManyRelation<infer T>
+        ? { type: 'many'; foreignTable: T }
+        : never
+}
+
 export const relations = <T extends AnyTable, R extends Record<string, Relation>>(
-    _table: T,
+    table: T,
     relationsCallback: (helpers: RelationsBuilder) => R
 ): R => {
-    return relationsCallback({
-        one: <U extends AnyTable>(table: U, config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }) => {
-            return new OneRelation(table, config)
+    const builtRelations = relationsCallback({
+        one: <U extends AnyTable>(
+            foreignTable: U,
+            config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
+        ) => {
+            return new OneRelation(foreignTable, config)
         },
-        many: <U extends AnyTable>(table: U) => {
-            return new ManyRelation(table)
+        many: <U extends AnyTable>(foreignTable: U) => {
+            return new ManyRelation(foreignTable)
         },
     })
+
+    for (const [name, relation] of Object.entries(builtRelations)) {
+        if (relation instanceof OneRelation) {
+            table.relations[name] = {
+                type: 'one',
+                foreignTable: relation.foreignTable,
+                fields: relation.config?.fields,
+                references: relation.config?.references,
+            }
+        } else if (relation instanceof ManyRelation) {
+            table.relations[name] = {
+                type: 'many',
+                foreignTable: relation.foreignTable,
+            }
+        }
+    }
+
+    return builtRelations
 }
 
 // Helper functions

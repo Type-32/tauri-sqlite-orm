@@ -161,53 +161,80 @@ export class SelectQueryBuilder<
     }
 
     private processRelationResults(rawResults: any[]): any[] {
-        if (!rawResults.length) return rawResults
+        if (!rawResults.length) return []
 
-        return rawResults.map((row) => {
-            const result: any = {}
+        const mainTablePks = Object.values(this.table._.columns)
+            .filter((c) => c.options.primaryKey)
+            .map((c) => c._.name)
+        if (mainTablePks.length === 0) {
+            // Cannot group results without a primary key
+            return rawResults
+        }
+
+        const groupedResults: Map<string, any> = new Map()
+
+        for (const row of rawResults) {
+            const mainTableKey = mainTablePks.map((pk) => row[`${this.selectedTableAlias}.${pk}`] ?? row[pk]).join('_')
+            if (!groupedResults.has(mainTableKey)) {
+                groupedResults.set(mainTableKey, {})
+            }
+
+            const result = groupedResults.get(mainTableKey)!
             const relations: any = {}
 
             // Process each column in the row
             for (const [key, value] of Object.entries(row)) {
-                // Handle aliased columns (table.column format)
                 if (key.includes('.')) {
                     const [tableAlias, columnName] = key.split('.')
 
-                    // Check if this is our main table
                     if (tableAlias === this.selectedTableAlias) {
                         result[columnName] = value
                     } else {
-                        // This is from a joined table - try to extract relation info
-                        // Format: mainTable_relationName
                         const parts = tableAlias.split('_')
                         if (parts.length >= 2 && parts[0] === this.selectedTableAlias) {
                             const relationName = parts.slice(1).join('_')
                             if (!relations[relationName]) relations[relationName] = {}
                             relations[relationName][columnName] = value
                         } else {
-                            // Fallback - just use the alias as key
                             if (!result[tableAlias]) result[tableAlias] = {}
                             result[tableAlias][columnName] = value
                         }
                     }
                 } else {
-                    // No alias - assume main table column
                     result[key] = value
                 }
             }
 
-            // Attach relations that have actual data
+            // Attach relations, handling one vs many
             for (const [relName, relData] of Object.entries(relations)) {
+                const relationConfig = this.table.relations[relName]
+                if (!relationConfig) continue
+
                 const hasData = Object.values(relData as Record<string, any>).some(
                     (v) => v !== null && v !== undefined && v !== ''
                 )
-                if (hasData) {
+                if (!hasData) continue
+
+                if (relationConfig.type === 'many') {
+                    if (!result[relName]) result[relName] = []
+                    // Avoid pushing duplicate related objects if the join results in multiple rows for the same related entity
+                    const relatedPks = Object.values(relationConfig.foreignTable._.columns)
+                        .filter((c) => c.options.primaryKey)
+                        .map((c) => c._.name)
+                    const relDataKey = relatedPks.map((pk) => (relData as any)[pk]).join('_')
+                    if (
+                        relatedPks.length === 0 ||
+                        !result[relName].some((r: any) => relatedPks.map((pk) => r[pk]).join('_') === relDataKey)
+                    ) {
+                        result[relName].push(relData)
+                    }
+                } else {
+                    // 'one'
                     result[relName] = relData
                 }
             }
-
-            return result
-        })
+        }
+        return Array.from(groupedResults.values())
     }
 
     // Update the return type signatures
