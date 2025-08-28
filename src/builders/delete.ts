@@ -7,7 +7,8 @@ export class DeleteQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
 
     constructor(db: Database, private table: T) {
         super(db);
-        this.query = `DELETE FROM ${table._.name}`;
+        this.query = `DELETE
+                      FROM ${table._.name}`;
     }
 
     returning(...columns: (keyof T["_"]["columns"])[]): this {

@@ -1,10 +1,13 @@
 import {SQLCondition} from "./orm";
 import {AnySQLiteColumn} from "./types";
 
-export const eq = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
-    sql: `${column._.name} = ?`,
-    params: [value],
-});
+export const eq = <T>(column: AnySQLiteColumn, value: T, tableAlias?: string): SQLCondition => {
+    const columnName = tableAlias ? `${tableAlias}.${column._.name}` : column._.name;
+    return {
+        sql: `${columnName} = ?`,
+        params: [value],
+    };
+};
 export const and = (...conditions: SQLCondition[]): SQLCondition => ({
     sql: conditions.map((c) => `(${c.sql})`).join(" AND "),
     params: conditions.flatMap((c) => c.params),
