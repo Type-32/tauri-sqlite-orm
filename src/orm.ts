@@ -25,7 +25,9 @@ export class SQLiteColumn<
     TMode extends Mode = 'default',
     TNotNull extends boolean = false,
     THasDefault extends boolean = false,
-    TAutoincrement extends boolean = false
+    TAutoincrement extends boolean = false,
+    TEnum extends readonly string[] = never,
+    TCustomType = never
 > {
     _: {
         name: TName
@@ -34,12 +36,14 @@ export class SQLiteColumn<
         notNull: TNotNull
         hasDefault: THasDefault
         autoincrement: TAutoincrement
+        enum: TEnum
+        customType: TCustomType
     }
 
     constructor(
         name: TName,
         public type: TType,
-        public options: ColumnOptions<ColumnValueTypes<TType, TMode>> = {},
+        public options: ColumnOptions<ColumnValueTypes<TType, TMode>, TEnum> = {},
         mode?: TMode
     ) {
         this._ = {
@@ -49,24 +53,28 @@ export class SQLiteColumn<
             notNull: (options.notNull ?? false) as TNotNull,
             hasDefault: (options.default !== undefined || options.$defaultFn !== undefined) as THasDefault,
             autoincrement: (options.autoincrement ?? false) as TAutoincrement,
+            enum: options.enum as TEnum,
+            customType: undefined as TCustomType,
         }
     }
 
-    notNull(): SQLiteColumn<TName, TType, TMode, true, THasDefault, TAutoincrement> {
+    notNull(): SQLiteColumn<TName, TType, TMode, true, THasDefault, TAutoincrement, TEnum, TCustomType> {
         return new SQLiteColumn(this._.name, this.type, { ...this.options, notNull: true }, this._.mode)
     }
 
-    default(value: ColumnValueTypes<TType, TMode>): SQLiteColumn<TName, TType, TMode, TNotNull, true, TAutoincrement> {
+    default(
+        value: ColumnValueTypes<TType, TMode>
+    ): SQLiteColumn<TName, TType, TMode, TNotNull, true, TAutoincrement, TEnum, TCustomType> {
         return new SQLiteColumn(this._.name, this.type, { ...this.options, default: value }, this._.mode)
     }
 
     $defaultFn(
         fn: () => ColumnValueTypes<TType, TMode>
-    ): SQLiteColumn<TName, TType, TMode, TNotNull, true, TAutoincrement> {
+    ): SQLiteColumn<TName, TType, TMode, TNotNull, true, TAutoincrement, TEnum, TCustomType> {
         return new SQLiteColumn(this._.name, this.type, { ...this.options, $defaultFn: fn }, this._.mode)
     }
 
-    primaryKey(): SQLiteColumn<TName, TType, TMode, true, THasDefault, TAutoincrement> {
+    primaryKey(): SQLiteColumn<TName, TType, TMode, true, THasDefault, TAutoincrement, TEnum, TCustomType> {
         return new SQLiteColumn(
             this._.name,
             this.type,
@@ -75,18 +83,18 @@ export class SQLiteColumn<
         )
     }
 
-    autoincrement(): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, true> {
+    autoincrement(): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, true, TEnum, TCustomType> {
         return new SQLiteColumn(this._.name, this.type, { ...this.options, autoincrement: true }, this._.mode)
     }
 
-    unique(): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement> {
+    unique(): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
         return new SQLiteColumn(this._.name, this.type, { ...this.options, unique: true }, this._.mode)
     }
 
     references<T extends AnyTable, K extends keyof T['_']['columns'] & string>(
         ref: T,
         column: K
-    ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement> {
+    ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
         return new SQLiteColumn(
             this._.name,
             this.type,
@@ -103,11 +111,15 @@ export class SQLiteColumn<
 
     $onUpdateFn(
         fn: () => ColumnValueTypes<TType, TMode>
-    ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement> {
+    ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
         return new SQLiteColumn(this._.name, this.type, { ...this.options, $onUpdateFn: fn }, this._.mode)
     }
 
-    as(alias: string): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement> {
+    $type<T>(): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, T> {
+        return this as any
+    }
+
+    as(alias: string): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
         // This is a placeholder for alias functionality
         return this
     }
