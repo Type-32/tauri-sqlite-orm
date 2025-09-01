@@ -250,30 +250,60 @@ export class TauriORM {
         return sql
     }
 
-    async migrate(): Promise<void> {
-        for (const table of this.tables.values()) {
-            const existingTableInfo: { name: string }[] = await this.db.select(`PRAGMA table_info('${table._.name}')`)
+    async migrate(options?: { performDestructiveActions?: boolean }): Promise<void> {
+        const dbTables = await this.db.select<{ name: string }[]>(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+        )
+        const dbTableNames = new Set(dbTables.map((t) => t.name))
+        const schemaTableNames = new Set(Array.from(this.tables.keys()))
 
-            if (existingTableInfo.length === 0) {
+        // Create/update tables
+        for (const table of this.tables.values()) {
+            const tableName = table._.name
+            const tableExists = dbTableNames.has(tableName)
+
+            if (!tableExists) {
                 // Table does not exist, create it
                 const columnsSql = Object.values(table._.columns)
                     .map((col) => this.buildColumnDefinition(col))
                     .join(', ')
-                const createSql = `CREATE TABLE ${table._.name}
+                const createSql = `CREATE TABLE ${tableName}
                                    (
                                        ${columnsSql}
                                    )`
                 await this.db.execute(createSql)
             } else {
-                // Table exists, add missing columns
+                // Table exists, add or remove columns
+                const existingTableInfo = await this.db.select<{ name: string }[]>(`PRAGMA table_info('${tableName}')`)
                 const existingColumnNames = new Set(existingTableInfo.map((c) => c.name))
+                const schemaColumnNames = new Set(Object.keys(table._.columns))
+
+                // Add missing columns
                 for (const column of Object.values(table._.columns)) {
                     if (!existingColumnNames.has(column._.name)) {
                         const columnSql = this.buildColumnDefinition(column, true)
-                        const alterSql = `ALTER TABLE ${table._.name}
+                        const alterSql = `ALTER TABLE ${tableName}
                             ADD COLUMN ${columnSql}`
                         await this.db.execute(alterSql)
                     }
+                }
+
+                // Drop extra columns if destructive actions are enabled
+                if (options?.performDestructiveActions) {
+                    for (const colName of existingColumnNames) {
+                        if (!schemaColumnNames.has(colName)) {
+                            await this.dropColumn(tableName, colName)
+                        }
+                    }
+                }
+            }
+        }
+
+        // Drop extra tables if destructive actions are enabled
+        if (options?.performDestructiveActions) {
+            for (const tableName of dbTableNames) {
+                if (!schemaTableNames.has(tableName)) {
+                    await this.dropTable(tableName)
                 }
             }
         }
@@ -422,6 +452,35 @@ export class TauriORM {
             return true
         }
         return false
+    }
+
+    async doesTableExist(tableName: string): Promise<boolean> {
+        const result = await this.db.select<{ name: string }[]>(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+            [tableName]
+        )
+        return result.length > 0
+    }
+
+    async dropTable(tableName: string): Promise<void> {
+        await this.db.execute(`DROP TABLE IF EXISTS ${tableName}`)
+    }
+
+    async doesColumnExist(tableName: string, columnName: string): Promise<boolean> {
+        const result = await this.db.select<{ name: string }[]>(`PRAGMA table_info('${tableName}')`)
+        return result.some((col) => col.name === columnName)
+    }
+
+    async renameTable(from: string, to: string): Promise<void> {
+        await this.db.execute(`ALTER TABLE ${from} RENAME TO ${to}`)
+    }
+
+    async dropColumn(tableName: string, columnName: string): Promise<void> {
+        await this.db.execute(`ALTER TABLE ${tableName} DROP COLUMN ${columnName}`)
+    }
+
+    async renameColumn(tableName: string, from: string, to: string): Promise<void> {
+        await this.db.execute(`ALTER TABLE ${tableName} RENAME COLUMN ${from} TO ${to}`)
     }
 }
 
