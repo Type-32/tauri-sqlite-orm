@@ -28,11 +28,12 @@
   "author": "Type-32",
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^24.3.0",
+    "@types/node": "^24.10.0",
     "tsup": "^8.5.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@tauri-apps/plugin-sql": "^2.3.0"
+    "@tauri-apps/plugin-sql": "^2.3.1",
+    "nuxt": "^4.2.0"
   }
 }
