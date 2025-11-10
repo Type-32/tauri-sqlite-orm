@@ -93,8 +93,12 @@ export class SQLiteColumn<
 
     references<T extends AnyTable, K extends keyof T['_']['columns'] & string>(
         ref: T,
-        column: K
+        column: K | T['_']['columns'][K]
     ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
+        // Accept either string key or column object for better DX
+        const columnKey = typeof column === 'string' ? column : (column as any)._.name as K
+        const columnObj = typeof column === 'string' ? ref._.columns[column] : column as any
+        
         return new SQLiteColumn(
             this._.name,
             this.type,
@@ -102,7 +106,7 @@ export class SQLiteColumn<
                 ...this.options,
                 references: {
                     table: ref,
-                    column: ref._.columns[column],
+                    column: columnObj,
                 },
             },
             this._.mode
