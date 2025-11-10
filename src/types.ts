@@ -68,11 +68,15 @@ export type AnyTable = Table<Record<string, AnySQLiteColumn>, string>
 export type InferSelectModel<T extends AnyTable> = {
     [K in keyof T['_']['columns']]: ExtractColumnType<T['_']['columns'][K]>
 }
-export type RelationType = 'one' | 'many'
+export type RelationType = 'one' | 'many' | 'manyToMany'
 
 export interface RelationConfig {
     type: RelationType
     foreignTable: AnyTable
     fields?: AnySQLiteColumn[]
     references?: AnySQLiteColumn[]
+    // Many-to-many specific fields
+    junctionTable?: AnyTable
+    junctionFields?: AnySQLiteColumn[] // columns in junction table that reference this table
+    junctionReferences?: AnySQLiteColumn[] // columns in junction table that reference the foreign table
 }

@@ -175,6 +175,20 @@ export type SQLCondition = {
     params: any[]
 }
 
+// Aggregate type for use in SELECT clauses
+export type SQLAggregate<T = number> = {
+    sql: string
+    params: any[]
+    _type?: T // phantom type for type inference
+}
+
+// Subquery type
+export type SQLSubquery = {
+    sql: string
+    params: any[]
+    _isSubquery: true
+}
+
 export const asc = (column: AnySQLiteColumn) => ({
     sql: `${column._.name} ASC`,
     params: [],
@@ -501,11 +515,32 @@ export class ManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
     }
 }
 
+export class ManyToManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
+    constructor(
+        foreignTable: T,
+        public config: {
+            junctionTable: AnyTable
+            junctionFields: AnySQLiteColumn[] // columns in junction that reference this table
+            junctionReferences: AnySQLiteColumn[] // columns in junction that reference foreign table
+        }
+    ) {
+        super(foreignTable)
+    }
+}
+
 type InferRelations<R extends Record<string, Relation>> = {
     [K in keyof R]: R[K] extends OneRelation<infer T>
         ? { type: 'one'; foreignTable: T; fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
         : R[K] extends ManyRelation<infer T>
         ? { type: 'many'; foreignTable: T }
+        : R[K] extends ManyToManyRelation<infer T>
+        ? {
+              type: 'manyToMany'
+              foreignTable: T
+              junctionTable: AnyTable
+              junctionFields: AnySQLiteColumn[]
+              junctionReferences: AnySQLiteColumn[]
+          }
         : never
 }
 
@@ -523,6 +558,16 @@ export const relations = <T extends AnyTable, R extends Record<string, Relation>
         many: <U extends AnyTable>(foreignTable: U) => {
             return new ManyRelation(foreignTable)
         },
+        manyToMany: <U extends AnyTable>(
+            foreignTable: U,
+            config: {
+                junctionTable: AnyTable
+                junctionFields: AnySQLiteColumn[]
+                junctionReferences: AnySQLiteColumn[]
+            }
+        ) => {
+            return new ManyToManyRelation(foreignTable, config)
+        },
     })
 
     for (const [name, relation] of Object.entries(builtRelations)) {
@@ -537,6 +582,14 @@ export const relations = <T extends AnyTable, R extends Record<string, Relation>
             table.relations[name] = {
                 type: 'many',
                 foreignTable: relation.foreignTable,
+            }
+        } else if (relation instanceof ManyToManyRelation) {
+            table.relations[name] = {
+                type: 'manyToMany',
+                foreignTable: relation.foreignTable,
+                junctionTable: relation.config.junctionTable,
+                junctionFields: relation.config.junctionFields,
+                junctionReferences: relation.config.junctionReferences,
             }
         }
     }

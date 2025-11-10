@@ -45,4 +45,8 @@ export class BaseQueryBuilder {
             params: this.params,
         };
     }
+
+    toSQL(): { sql: string; params: any[] } {
+        return this.build();
+    }
 }

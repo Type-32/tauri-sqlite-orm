@@ -2,6 +2,7 @@ import {BaseQueryBuilder} from "./query-base";
 import Database from "@tauri-apps/plugin-sql";
 import {InferInsertModel} from "../orm";
 import {AnySQLiteColumn, AnyTable, InferSelectModel} from "../types";
+import {InsertValidationError, ColumnNotFoundError} from "../errors";
 
 export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
     private dataSets: InferInsertModel<T>[] = [];
@@ -93,7 +94,7 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
         T extends AnyTable ? (InferSelectModel<T> & Record<string, any>)[] : never
     > {
         if (this.dataSets.length === 0) {
-            throw new Error("No data provided for insert");
+            throw new InsertValidationError("No data provided for insert. Use .values() to provide data.");
         }
 
         const processedDataSets = this.dataSets.map((data) =>
@@ -165,5 +166,53 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
             this.table._.columns
         ) as (keyof T["_"]["columns"])[];
         return this.returning(...allColumns).execute();
+    }
+
+    toSQL(): { sql: string; params: any[] } {
+        if (this.dataSets.length === 0) {
+            throw new InsertValidationError("No data provided for insert. Use .values() to provide data.");
+        }
+
+        const processedDataSets = this.dataSets.map((data) =>
+            this.processDefaultValues(data)
+        );
+
+        // Use first dataset to build the query structure
+        const dataSet = processedDataSets[0];
+        const columns = Object.keys(dataSet) as (keyof T["_"]["columns"])[];
+        const columnNames = columns.map(
+            (key) => this.table._.columns[key as string]._.name
+        );
+        const placeholders = `(${columns.map(() => "?").join(", ")})`;
+        const valuesSql = processedDataSets.map(() => placeholders).join(", ");
+        const conflictClause = this.buildConflictClause();
+
+        const finalQuery = `${this.query} (${columnNames.join(
+            ", "
+        )}) VALUES ${valuesSql}${conflictClause}`;
+
+        const params = processedDataSets.flatMap((data) =>
+            columns.map((col) => (data as any)[col] ?? null)
+        );
+
+        // Add conflict update params
+        if (this.onConflictAction === "update") {
+            const setValues = Object.entries(this.updateSet).map(
+                ([, value]) => value
+            );
+            params.push(...setValues);
+        }
+
+        if (this.returningColumns.length > 0) {
+            const returningNames = this.returningColumns
+                .map((col) => this.table._.columns[col as string]._.name)
+                .join(", ");
+            return {
+                sql: `${finalQuery} RETURNING ${returningNames}`,
+                params,
+            };
+        }
+
+        return { sql: finalQuery, params };
     }
 }

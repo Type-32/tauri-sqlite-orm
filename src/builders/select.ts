@@ -4,6 +4,10 @@ import { and, eq } from '../operators'
 import { SQLCondition } from '../orm'
 import { AnySQLiteColumn, AnyTable } from '../types'
 
+// Type for nested includes
+type NestedInclude = boolean | { with?: Record<string, NestedInclude> }
+type IncludeRelations<T extends AnyTable> = Partial<Record<keyof T['relations'], NestedInclude>>
+
 // Enhanced SelectQueryBuilder with proper aliasing and relation handling
 export class SelectQueryBuilder<
     TTable extends AnyTable,
@@ -18,7 +22,7 @@ export class SelectQueryBuilder<
         condition: SQLCondition
         alias: string
     }> = []
-    private includeRelations: Partial<Record<keyof TTable['relations'], boolean>> = {}
+    private includeRelations: IncludeRelations<TTable> = {}
     private selectedTableAlias: string
     private selectedColumns: string[] = []
 
@@ -74,7 +78,7 @@ export class SelectQueryBuilder<
         return this
     }
 
-    include(relations: Partial<Record<keyof TTable['relations'], boolean>>): this {
+    include(relations: IncludeRelations<TTable>): this {
         this.includeRelations = { ...this.includeRelations, ...relations }
         return this
     }
@@ -89,51 +93,43 @@ export class SelectQueryBuilder<
             params.push(...join.condition.params)
         }
 
-        // Then handle relations
-        for (const [relationName, include] of Object.entries(this.includeRelations)) {
-            if (!include) continue
-
-            const relation = this.table.relations[relationName]
-            if (!relation) {
-                console.warn(
-                    `[Tauri-ORM] Relation "${relationName}" not found on table "${this.table._.name}". Skipping include.`
-                )
-                continue
+        // Then handle relations recursively
+        const processRelations = (
+            parentTable: AnyTable,
+            parentAlias: string,
+            relations: IncludeRelations<any>,
+            depth: number = 0
+        ) => {
+            // Prevent infinite recursion
+            if (depth > 10) {
+                console.warn('[Tauri-ORM] Maximum relation depth (10) exceeded. Skipping deeper relations.')
+                return
             }
 
-            const foreignTable = relation.foreignTable
-            const foreignAlias = `${this.selectedTableAlias}_${relationName}`
+            for (const [relationName, include] of Object.entries(relations)) {
+                if (!include) continue
 
-            const aliasedColumns = Object.values(foreignTable._.columns).map(
-                (col) => `${foreignAlias}.${col._.name} AS "${foreignAlias}.${col._.name}"`
-            )
-            this.selectedColumns.push(...aliasedColumns)
+                const relation = parentTable.relations[relationName]
+                if (!relation) {
+                    console.warn(
+                        `[Tauri-ORM] Relation "${relationName}" not found on table "${parentTable._.name}". Skipping include.`
+                    )
+                    continue
+                }
 
-            if (relation.type === 'one' && relation.fields && relation.references) {
-                // One-to-one or many-to-one: this table references foreign table
-                const conditions = relation.fields.map((field, i) => {
-                    const localColumn = `${this.selectedTableAlias}.${field._.name}`
-                    const foreignColumn = `${foreignAlias}.${relation.references![i]._.name}`
-                    return {
-                        sql: `${localColumn} = ${foreignColumn}`,
-                        params: [],
-                    }
-                })
-                const condition = conditions.length > 1 ? and(...conditions) : conditions[0]
+                const foreignTable = relation.foreignTable
+                const foreignAlias = `${parentAlias}_${relationName}`
 
-                sql += ` LEFT JOIN ${foreignTable._.name} ${foreignAlias} ON ${condition.sql}`
-                params.push(...condition.params)
-            } else if (relation.type === 'many') {
-                // One-to-many: foreign table references this table
-                const refRelation = Object.entries(foreignTable.relations).find(
-                    ([_, r]) => r.foreignTable === this.table
+                const aliasedColumns = Object.values(foreignTable._.columns).map(
+                    (col) => `${foreignAlias}.${col._.name} AS "${foreignAlias}.${col._.name}"`
                 )
+                this.selectedColumns.push(...aliasedColumns)
 
-                if (refRelation && refRelation[1].fields && refRelation[1].references) {
-                    const [_, relationConfig] = refRelation
-                    const conditions = relationConfig.fields!.map((field, i) => {
-                        const localColumn = `${foreignAlias}.${field._.name}`
-                        const foreignColumn = `${this.selectedTableAlias}.${relationConfig.references![i]._.name}`
+                if (relation.type === 'one' && relation.fields && relation.references) {
+                    // One-to-one or many-to-one: parent table references foreign table
+                    const conditions = relation.fields.map((field, i) => {
+                        const localColumn = `${parentAlias}.${field._.name}`
+                        const foreignColumn = `${foreignAlias}.${relation.references![i]._.name}`
                         return {
                             sql: `${localColumn} = ${foreignColumn}`,
                             params: [],
@@ -143,9 +139,85 @@ export class SelectQueryBuilder<
 
                     sql += ` LEFT JOIN ${foreignTable._.name} ${foreignAlias} ON ${condition.sql}`
                     params.push(...condition.params)
+                } else if (relation.type === 'many') {
+                    // One-to-many: foreign table references parent table
+                    const refRelation = Object.entries(foreignTable.relations).find(
+                        ([_, r]) => r.foreignTable === parentTable
+                    )
+
+                    if (refRelation && refRelation[1].fields && refRelation[1].references) {
+                        const [_, relationConfig] = refRelation
+                        const conditions = relationConfig.fields!.map((field, i) => {
+                            const localColumn = `${foreignAlias}.${field._.name}`
+                            const foreignColumn = `${parentAlias}.${relationConfig.references![i]._.name}`
+                            return {
+                                sql: `${localColumn} = ${foreignColumn}`,
+                                params: [],
+                            }
+                        })
+                        const condition = conditions.length > 1 ? and(...conditions) : conditions[0]
+
+                        sql += ` LEFT JOIN ${foreignTable._.name} ${foreignAlias} ON ${condition.sql}`
+                        params.push(...condition.params)
+                    }
+                } else if (relation.type === 'manyToMany' && relation.junctionTable && relation.junctionFields && relation.junctionReferences) {
+                    // Many-to-many: join through junction table
+                    const junctionTable = relation.junctionTable
+                    const junctionAlias = `${foreignAlias}_junction`
+
+                    // First, join the junction table
+                    // Get the primary key(s) of the parent table to link with junction
+                    const parentTablePks = Object.values(parentTable._.columns)
+                        .filter((c) => c.options.primaryKey)
+                        .map((c) => c._.name)
+
+                    if (parentTablePks.length > 0 && relation.junctionFields.length > 0) {
+                        const junctionConditions = relation.junctionFields.map((field, i) => {
+                            const parentPk = parentTablePks[i] || parentTablePks[0] // fallback to first PK
+                            const localColumn = `${parentAlias}.${parentPk}`
+                            const junctionColumn = `${junctionAlias}.${field._.name}`
+                            return {
+                                sql: `${localColumn} = ${junctionColumn}`,
+                                params: [],
+                            }
+                        })
+                        const junctionCondition = junctionConditions.length > 1 ? and(...junctionConditions) : junctionConditions[0]
+
+                        sql += ` LEFT JOIN ${junctionTable._.name} ${junctionAlias} ON ${junctionCondition.sql}`
+                        params.push(...junctionCondition.params)
+
+                        // Then, join the target table through the junction table
+                        const foreignTablePks = Object.values(foreignTable._.columns)
+                            .filter((c) => c.options.primaryKey)
+                            .map((c) => c._.name)
+
+                        if (foreignTablePks.length > 0 && relation.junctionReferences.length > 0) {
+                            const foreignConditions = relation.junctionReferences.map((field, i) => {
+                                const foreignPk = foreignTablePks[i] || foreignTablePks[0]
+                                const junctionColumn = `${junctionAlias}.${field._.name}`
+                                const foreignColumn = `${foreignAlias}.${foreignPk}`
+                                return {
+                                    sql: `${junctionColumn} = ${foreignColumn}`,
+                                    params: [],
+                                }
+                            })
+                            const foreignCondition = foreignConditions.length > 1 ? and(...foreignConditions) : foreignConditions[0]
+
+                            sql += ` LEFT JOIN ${foreignTable._.name} ${foreignAlias} ON ${foreignCondition.sql}`
+                            params.push(...foreignCondition.params)
+                        }
+                    }
+                }
+
+                // Process nested includes
+                if (typeof include === 'object' && include.with) {
+                    processRelations(foreignTable, foreignAlias, include.with, depth + 1)
                 }
             }
         }
+
+        // Start processing from the main table
+        processRelations(this.table, this.selectedTableAlias, this.includeRelations, 0)
 
         return { sql, params }
     }
@@ -160,7 +232,6 @@ export class SelectQueryBuilder<
         this.params.push(...joinParams)
 
         const { sql, params } = this.build()
-        console.log('Executing SQL:', sql, 'with params:', params) // Debug log
 
         const rawResults = await this.db.select<any[]>(sql, params)
 
@@ -202,6 +273,46 @@ export class SelectQueryBuilder<
 
         const groupedResults: Map<string, any> = new Map()
 
+        // Helper to parse nested relation data from column keys
+        const parseRelationPath = (tableAlias: string, baseAlias: string): string[] => {
+            if (!tableAlias.startsWith(baseAlias + '_')) {
+                return []
+            }
+            const path = tableAlias.substring(baseAlias.length + 1)
+            return path.split('_')
+        }
+
+        // Helper to set nested value in object
+        const setNestedValue = (obj: any, path: string[], value: any, columnName: string) => {
+            let current = obj
+            for (let i = 0; i < path.length; i++) {
+                const key = path[i]
+                if (i === path.length - 1) {
+                    // Last key - set the column value
+                    if (!current[key]) current[key] = {}
+                    current[key][columnName] = value
+                } else {
+                    // Intermediate key
+                    if (!current[key]) current[key] = {}
+                    current = current[key]
+                }
+            }
+        }
+
+        // Helper to get nested relation config
+        const getNestedRelation = (table: AnyTable, path: string[]): any => {
+            let currentTable = table
+            let currentRelation = null
+            
+            for (const relationName of path) {
+                currentRelation = currentTable.relations[relationName]
+                if (!currentRelation) return null
+                currentTable = currentRelation.foreignTable
+            }
+            
+            return currentRelation
+        }
+
         for (const row of rawResults) {
             const mainTableKey = mainTablePks.map((pk) => row[`${this.selectedTableAlias}.${pk}`] ?? row[pk]).join('_')
             if (!groupedResults.has(mainTableKey)) {
@@ -219,11 +330,9 @@ export class SelectQueryBuilder<
                     if (tableAlias === this.selectedTableAlias) {
                         result[columnName] = value
                     } else {
-                        const parts = tableAlias.split('_')
-                        if (parts.length >= 2 && parts[0] === this.selectedTableAlias) {
-                            const relationName = parts.slice(1).join('_')
-                            if (!relations[relationName]) relations[relationName] = {}
-                            relations[relationName][columnName] = value
+                        const relationPath = parseRelationPath(tableAlias, this.selectedTableAlias)
+                        if (relationPath.length > 0) {
+                            setNestedValue(relations, relationPath, value, columnName)
                         } else {
                             if (!result[tableAlias]) result[tableAlias] = {}
                             result[tableAlias][columnName] = value
@@ -234,34 +343,101 @@ export class SelectQueryBuilder<
                 }
             }
 
-            // Attach relations, handling one vs many
-            for (const [relName, relData] of Object.entries(relations)) {
-                const relationConfig = this.table.relations[relName]
-                if (!relationConfig) continue
+            // Recursively attach relations
+            const attachRelations = (target: any, relationsData: any, table: AnyTable, pathPrefix: string[] = []) => {
+                for (const [relName, relData] of Object.entries(relationsData)) {
+                    const currentPath = [...pathPrefix, relName]
+                    const relationConfig = getNestedRelation(table, currentPath)
+                    
+                    if (!relationConfig) continue
 
-                const hasData = Object.values(relData as Record<string, any>).some(
-                    (v) => v !== null && v !== undefined && v !== ''
-                )
-                if (!hasData) continue
+                    // Check if this relation has data
+                    const hasDirectData = typeof relData === 'object' && relData !== null &&
+                        Object.entries(relData as Record<string, any>).some(([k, v]) => {
+                            // If the key is a column name (not a nested relation), check if it has data
+                            return typeof v !== 'object' && v !== null && v !== undefined && v !== ''
+                        })
 
-                if (relationConfig.type === 'many') {
-                    if (!result[relName]) result[relName] = []
-                    // Avoid pushing duplicate related objects if the join results in multiple rows for the same related entity
-                    const relatedPks = Object.values(relationConfig.foreignTable._.columns)
-                        .filter((c) => c.options.primaryKey)
-                        .map((c) => c._.name)
-                    const relDataKey = relatedPks.map((pk) => (relData as any)[pk]).join('_')
-                    if (
-                        relatedPks.length === 0 ||
-                        !result[relName].some((r: any) => relatedPks.map((pk) => r[pk]).join('_') === relDataKey)
-                    ) {
-                        result[relName].push(relData)
+                    if (!hasDirectData && typeof relData === 'object' && relData !== null) {
+                        // This might be a nested relation container
+                        // Check if any nested relations have data
+                        const hasNestedData = Object.values(relData as Record<string, any>).some(v => 
+                            typeof v === 'object' && v !== null && Object.keys(v as Record<string, any>).length > 0
+                        )
+                        if (!hasNestedData) continue
                     }
-                } else {
-                    // 'one'
-                    result[relName] = relData
+
+                    if (relationConfig.type === 'many' || relationConfig.type === 'manyToMany') {
+                        if (!target[relName]) target[relName] = []
+                        
+                        // Extract direct column data
+                        const directData: any = {}
+                        const nestedData: any = {}
+                        
+                        if (typeof relData === 'object' && relData !== null) {
+                            for (const [k, v] of Object.entries(relData as Record<string, any>)) {
+                                if (typeof v === 'object' && v !== null) {
+                                    nestedData[k] = v
+                                } else {
+                                    directData[k] = v
+                                }
+                            }
+                        }
+
+                        // Check if we have actual data
+                        const hasData = Object.values(directData).some(
+                            (v) => v !== null && v !== undefined && v !== ''
+                        )
+
+                        if (hasData) {
+                            const relatedPks = Object.values(relationConfig.foreignTable._.columns)
+                                .filter((c: any) => c.options.primaryKey)
+                                .map((c: any) => c._.name)
+                            const relDataKey = relatedPks.map((pk) => directData[pk]).join('_')
+                            
+                            if (
+                                relatedPks.length === 0 ||
+                                !target[relName].some((r: any) => relatedPks.map((pk) => r[pk]).join('_') === relDataKey)
+                            ) {
+                                const newItem = { ...directData }
+                                // Recursively attach nested relations
+                                if (Object.keys(nestedData).length > 0) {
+                                    attachRelations(newItem, nestedData, relationConfig.foreignTable, [])
+                                }
+                                target[relName].push(newItem)
+                            }
+                        }
+                    } else {
+                        // 'one' relation
+                        const directData: any = {}
+                        const nestedData: any = {}
+                        
+                        if (typeof relData === 'object' && relData !== null) {
+                            for (const [k, v] of Object.entries(relData as Record<string, any>)) {
+                                if (typeof v === 'object' && v !== null) {
+                                    nestedData[k] = v
+                                } else {
+                                    directData[k] = v
+                                }
+                            }
+                        }
+
+                        const hasData = Object.values(directData).some(
+                            (v) => v !== null && v !== undefined && v !== ''
+                        )
+
+                        if (hasData || Object.keys(nestedData).length > 0) {
+                            target[relName] = { ...directData }
+                            // Recursively attach nested relations
+                            if (Object.keys(nestedData).length > 0) {
+                                attachRelations(target[relName], nestedData, relationConfig.foreignTable, [])
+                            }
+                        }
+                    }
                 }
             }
+
+            attachRelations(result, relations, this.table)
         }
         return Array.from(groupedResults.values())
     }
@@ -275,5 +451,17 @@ export class SelectQueryBuilder<
         this.limit(1)
         const result = await this.execute()
         return result[0]
+    }
+
+    toSQL(): { sql: string; params: any[] } {
+        const { sql: joinSql, params: joinParams } = this.buildJoins()
+
+        const distinct = this.isDistinct ? 'DISTINCT ' : ''
+        const finalQuery = `SELECT ${distinct}${this.selectedColumns.join(', ')} ${this.query}${joinSql}`
+
+        return {
+            sql: finalQuery,
+            params: [...this.params, ...joinParams],
+        }
     }
 }
