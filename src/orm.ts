@@ -353,6 +353,22 @@ export class TauriORM {
         return new DeleteQueryBuilder(this.db, table)
     }
 
+    async upsert<T extends AnyTable>(
+        table: T,
+        data: InferInsertModel<T>,
+        conflictTarget: (keyof T['_']['columns'])[]
+    ): Promise<T extends AnyTable ? { lastInsertId: number; rowsAffected: number }[] : never> {
+        const columns = conflictTarget.map(col => table._.columns[col as string])
+        
+        return this.insert(table)
+            .values(data)
+            .onConflictDoUpdate({
+                target: columns.length === 1 ? columns[0] : columns,
+                set: data
+            })
+            .execute() as any
+    }
+
     $with(alias: string): {
         as: (query: { sql: string; params: any[] }) => WithQueryBuilder
     } {

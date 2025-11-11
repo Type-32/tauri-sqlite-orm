@@ -2,7 +2,7 @@ import { BaseQueryBuilder } from './query-base'
 import Database from '@tauri-apps/plugin-sql'
 import { and, eq } from '../operators'
 import { SQLCondition } from '../orm'
-import { AnySQLiteColumn, AnyTable } from '../types'
+import { AnySQLiteColumn, AnyTable, InferSelectModel } from '../types'
 
 // Type for nested includes with better inference
 type NestedInclude = boolean | { with?: Record<string, NestedInclude> }
@@ -231,7 +231,7 @@ export class SelectQueryBuilder<
     }
 
     // Enhanced execute method that handles relation data mapping
-    async execute(): Promise<any[]> {
+    async execute(): Promise<InferSelectModel<TTable>[]> {
         const { sql: joinSql, params: joinParams } = this.buildJoins()
 
         const distinct = this.isDistinct ? 'DISTINCT ' : ''
@@ -245,12 +245,12 @@ export class SelectQueryBuilder<
 
         const hasIncludes = Object.values(this.includeRelations).some((i) => i)
         if (hasIncludes) {
-            return this.processRelationResults(rawResults)
+            return this.processRelationResults(rawResults) as InferSelectModel<TTable>[]
         }
 
         const hasJoins = this.joins.length > 0
         if (hasJoins) {
-            return rawResults
+            return rawResults as InferSelectModel<TTable>[]
         }
 
         // Strip prefixes for simple queries
@@ -265,7 +265,7 @@ export class SelectQueryBuilder<
                 }
             }
             return newRow
-        })
+        }) as InferSelectModel<TTable>[]
     }
 
     private processRelationResults(rawResults: any[]): any[] {
@@ -451,14 +451,107 @@ export class SelectQueryBuilder<
     }
 
     // Update the return type signatures
-    async all(): Promise<any[]> {
+    async all(): Promise<InferSelectModel<TTable>[]> {
         return this.execute()
     }
 
-    async get(): Promise<any | undefined> {
+    async get(): Promise<InferSelectModel<TTable> | undefined> {
         this.limit(1)
         const result = await this.execute()
         return result[0]
+    }
+
+    async exists(): Promise<boolean> {
+        // Use SELECT 1 for efficiency - we only care if rows exist
+        const originalColumns = this.selectedColumns
+        this.selectedColumns = ['1']
+        
+        const { sql: joinSql, params: joinParams } = this.buildJoins()
+        
+        // Build query with LIMIT 1 for efficiency
+        const query = `SELECT 1 ${this.query}${joinSql} LIMIT 1`
+        const params = [...this.params, ...joinParams]
+        
+        // Restore original columns
+        this.selectedColumns = originalColumns
+        
+        const result = await this.db.select<any[]>(query, params)
+        return result.length > 0
+    }
+
+    async count(): Promise<number> {
+        // Build COUNT(*) query
+        const originalColumns = this.selectedColumns
+        this.selectedColumns = ['COUNT(*) as count']
+        
+        const { sql: joinSql, params: joinParams } = this.buildJoins()
+        
+        const query = `SELECT COUNT(*) as count ${this.query}${joinSql}`
+        const params = [...this.params, ...joinParams]
+        
+        // Restore original columns
+        this.selectedColumns = originalColumns
+        
+        const result = await this.db.select<{ count: number }[]>(query, params)
+        return result[0]?.count || 0
+    }
+
+    async first(): Promise<InferSelectModel<TTable> | undefined> {
+        // Alias for get() with better semantics
+        return this.get()
+    }
+
+    async pluck<K extends keyof TTable['_']['columns']>(
+        column: K
+    ): Promise<InferSelectModel<TTable>[K][]> {
+        // Get array of values from a single column
+        const columnName = this.table._.columns[column as string]._.name
+        const originalColumns = this.selectedColumns
+        this.selectedColumns = [`${this.selectedTableAlias}.${columnName} AS "${columnName}"`]
+        
+        const { sql: joinSql, params: joinParams } = this.buildJoins()
+        
+        const query = `SELECT ${this.selectedColumns.join(', ')} ${this.query}${joinSql}`
+        const params = [...this.params, ...joinParams]
+        
+        // Restore original columns
+        this.selectedColumns = originalColumns
+        
+        const results = await this.db.select<any[]>(query, params)
+        return results.map(row => row[columnName]) as InferSelectModel<TTable>[K][]
+    }
+
+    async paginate(page: number = 1, pageSize: number = 10): Promise<{
+        data: InferSelectModel<TTable>[]
+        total: number
+        page: number
+        pageSize: number
+        totalPages: number
+        hasNextPage: boolean
+        hasPrevPage: boolean
+    }> {
+        if (page < 1) page = 1
+        if (pageSize < 1) pageSize = 10
+
+        // Get total count
+        const total = await this.count()
+        
+        // Calculate pagination
+        const totalPages = Math.ceil(total / pageSize)
+        const offset = (page - 1) * pageSize
+        
+        // Get paginated data
+        const data = await this.limit(pageSize).offset(offset).all()
+        
+        return {
+            data,
+            total,
+            page,
+            pageSize,
+            totalPages,
+            hasNextPage: page < totalPages,
+            hasPrevPage: page > 1,
+        }
     }
 
     toSQL(): { sql: string; params: any[] } {
