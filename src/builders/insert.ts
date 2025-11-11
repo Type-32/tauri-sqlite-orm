@@ -168,6 +168,14 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
         return this.returning(...allColumns).execute();
     }
 
+    async returningFirst(): Promise<InferSelectModel<T> | undefined> {
+        const allColumns = Object.keys(
+            this.table._.columns
+        ) as (keyof T["_"]["columns"])[];
+        const results = await this.returning(...allColumns).execute();
+        return results[0] as InferSelectModel<T> | undefined;
+    }
+
     toSQL(): { sql: string; params: any[] } {
         if (this.dataSets.length === 0) {
             throw new InsertValidationError("No data provided for insert. Use .values() to provide data.");

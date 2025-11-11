@@ -115,29 +115,49 @@ export class SelectQueryBuilder<
             }
 
             for (const [relationName, include] of Object.entries(relations)) {
-                if (!include) continue
+            if (!include) continue
 
                 const relation = parentTable.relations[relationName]
-                if (!relation) {
-                    console.warn(
+            if (!relation) {
+                console.warn(
                         `[Tauri-ORM] Relation "${relationName}" not found on table "${parentTable._.name}". Skipping include.`
-                    )
-                    continue
-                }
+                )
+                continue
+            }
 
-                const foreignTable = relation.foreignTable
+            const foreignTable = relation.foreignTable
                 const foreignAlias = `${parentAlias}_${relationName}`
 
-                const aliasedColumns = Object.values(foreignTable._.columns).map(
-                    (col) => `${foreignAlias}.${col._.name} AS "${foreignAlias}.${col._.name}"`
-                )
-                this.selectedColumns.push(...aliasedColumns)
+            const aliasedColumns = Object.values(foreignTable._.columns).map(
+                (col) => `${foreignAlias}.${col._.name} AS "${foreignAlias}.${col._.name}"`
+            )
+            this.selectedColumns.push(...aliasedColumns)
 
-                if (relation.type === 'one' && relation.fields && relation.references) {
+            if (relation.type === 'one' && relation.fields && relation.references) {
                     // One-to-one or many-to-one: parent table references foreign table
-                    const conditions = relation.fields.map((field, i) => {
+                const conditions = relation.fields.map((field, i) => {
                         const localColumn = `${parentAlias}.${field._.name}`
-                        const foreignColumn = `${foreignAlias}.${relation.references![i]._.name}`
+                    const foreignColumn = `${foreignAlias}.${relation.references![i]._.name}`
+                    return {
+                        sql: `${localColumn} = ${foreignColumn}`,
+                        params: [],
+                    }
+                })
+                const condition = conditions.length > 1 ? and(...conditions) : conditions[0]
+
+                sql += ` LEFT JOIN ${foreignTable._.name} ${foreignAlias} ON ${condition.sql}`
+                params.push(...condition.params)
+            } else if (relation.type === 'many') {
+                    // One-to-many: foreign table references parent table
+                const refRelation = Object.entries(foreignTable.relations).find(
+                        ([_, r]) => r.foreignTable === parentTable
+                )
+
+                if (refRelation && refRelation[1].fields && refRelation[1].references) {
+                    const [_, relationConfig] = refRelation
+                    const conditions = relationConfig.fields!.map((field, i) => {
+                        const localColumn = `${foreignAlias}.${field._.name}`
+                            const foreignColumn = `${parentAlias}.${relationConfig.references![i]._.name}`
                         return {
                             sql: `${localColumn} = ${foreignColumn}`,
                             params: [],
@@ -147,27 +167,7 @@ export class SelectQueryBuilder<
 
                     sql += ` LEFT JOIN ${foreignTable._.name} ${foreignAlias} ON ${condition.sql}`
                     params.push(...condition.params)
-                } else if (relation.type === 'many') {
-                    // One-to-many: foreign table references parent table
-                    const refRelation = Object.entries(foreignTable.relations).find(
-                        ([_, r]) => r.foreignTable === parentTable
-                    )
-
-                    if (refRelation && refRelation[1].fields && refRelation[1].references) {
-                        const [_, relationConfig] = refRelation
-                        const conditions = relationConfig.fields!.map((field, i) => {
-                            const localColumn = `${foreignAlias}.${field._.name}`
-                            const foreignColumn = `${parentAlias}.${relationConfig.references![i]._.name}`
-                            return {
-                                sql: `${localColumn} = ${foreignColumn}`,
-                                params: [],
-                            }
-                        })
-                        const condition = conditions.length > 1 ? and(...conditions) : conditions[0]
-
-                        sql += ` LEFT JOIN ${foreignTable._.name} ${foreignAlias} ON ${condition.sql}`
-                        params.push(...condition.params)
-                    }
+                }
                 } else if (relation.type === 'manyToMany' && relation.junctionTable && relation.junctionFields && relation.junctionReferences) {
                     // Many-to-many: join through junction table
                     const junctionTable = relation.junctionTable
@@ -357,7 +357,7 @@ export class SelectQueryBuilder<
                     const currentPath = [...pathPrefix, relName]
                     const relationConfig = getNestedRelation(table, currentPath)
                     
-                    if (!relationConfig) continue
+                if (!relationConfig) continue
 
                     // Check if this relation has data
                     const hasDirectData = typeof relData === 'object' && relData !== null &&
@@ -394,19 +394,19 @@ export class SelectQueryBuilder<
 
                         // Check if we have actual data
                         const hasData = Object.values(directData).some(
-                            (v) => v !== null && v !== undefined && v !== ''
-                        )
+                    (v) => v !== null && v !== undefined && v !== ''
+                )
 
                         if (hasData) {
-                            const relatedPks = Object.values(relationConfig.foreignTable._.columns)
+                    const relatedPks = Object.values(relationConfig.foreignTable._.columns)
                                 .filter((c: any) => c.options.primaryKey)
                                 .map((c: any) => c._.name)
                             const relDataKey = relatedPks.map((pk) => directData[pk]).join('_')
                             
-                            if (
-                                relatedPks.length === 0 ||
+                    if (
+                        relatedPks.length === 0 ||
                                 !target[relName].some((r: any) => relatedPks.map((pk) => r[pk]).join('_') === relDataKey)
-                            ) {
+                    ) {
                                 const newItem = { ...directData }
                                 // Recursively attach nested relations
                                 if (Object.keys(nestedData).length > 0) {
@@ -414,8 +414,8 @@ export class SelectQueryBuilder<
                                 }
                                 target[relName].push(newItem)
                             }
-                        }
-                    } else {
+                    }
+                } else {
                         // 'one' relation
                         const directData: any = {}
                         const nestedData: any = {}
@@ -439,8 +439,8 @@ export class SelectQueryBuilder<
                             // Recursively attach nested relations
                             if (Object.keys(nestedData).length > 0) {
                                 attachRelations(target[relName], nestedData, relationConfig.foreignTable, [])
-                            }
-                        }
+                }
+            }
                     }
                 }
             }
