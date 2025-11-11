@@ -4,9 +4,17 @@ import { and, eq } from '../operators'
 import { SQLCondition } from '../orm'
 import { AnySQLiteColumn, AnyTable } from '../types'
 
-// Type for nested includes
+// Type for nested includes with better inference
 type NestedInclude = boolean | { with?: Record<string, NestedInclude> }
-type IncludeRelations<T extends AnyTable> = Partial<Record<keyof T['relations'], NestedInclude>>
+
+// Extract relation names from a table for better autocomplete
+type ExtractRelationNames<T extends AnyTable> = T['relations'] extends Record<string, any>
+    ? keyof T['relations'] & string
+    : never
+
+type IncludeRelations<T extends AnyTable> = T['relations'] extends Record<string, any>
+    ? Partial<Record<ExtractRelationNames<T>, NestedInclude>>
+    : Record<string, never>
 
 // Enhanced SelectQueryBuilder with proper aliasing and relation handling
 export class SelectQueryBuilder<
