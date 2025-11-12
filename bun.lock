@@ -4,13 +4,13 @@
     "": {
       "name": "@type32/tauri-sqlite-orm",
       "dependencies": {
-        "@tauri-apps/plugin-sql": "^2.3.1",
-        "nuxt": "^4.2.1",
+        "@tauri-apps/plugin-sql": "latest",
+        "nuxt": "latest",
       },
       "devDependencies": {
-        "@types/node": "^24.10.0",
-        "tsup": "^8.5.0",
-        "typescript": "^5.9.3",
+        "@types/node": "latest",
+        "tsup": "latest",
+        "typescript": "latest",
       },
     },
   },
@@ -391,7 +391,7 @@
 
     "@types/estree": ["@types/estree@1.0.8", "", {}, "sha512-dWHzHa2WqEXI/O1E9OjrocMTKJl2mSrEolh1Iomrv6U+JuNwaHXsXx9bLu5gG7BUWFIN0skIQJQ/L1rIex4X6w=="],
 
-    "@types/node": ["@types/node@24.10.0", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-qzQZRBqkFsYyaSWXuEHc2WR9c0a0CXwiE5FWUvn7ZM+vdy1uZLfCunD38UzhuB7YN/J11ndbDBcTmOdxJo9Q7A=="],
+    "@types/node": ["@types/node@24.10.1", "", { "dependencies": { "undici-types": "~7.16.0" } }, "sha512-GNWcUTRBgIRJD5zj+Tq0fKOJ5XZajIiBroOF0yvj2bSU1WvNdYS/dn9UxwsujGW4JX06dnHyjV2y9rRaybH0iQ=="],
 
     "@types/parse-path": ["@types/parse-path@7.1.0", "", { "dependencies": { "parse-path": "*" } }, "sha512-EULJ8LApcVEPbrfND0cRQqutIOdiIgJ1Mgrhpy755r14xMohPTEpkV/k28SJvuOs9bHRFW8x+KeDAEPiGQPB9Q=="],
 

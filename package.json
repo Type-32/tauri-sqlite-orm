@@ -30,7 +30,7 @@
     "author": "Type-32",
     "license": "MIT",
     "devDependencies": {
-        "@types/node": "^24.10.0",
+        "@types/node": "^24.10.1",
         "tsup": "^8.5.0",
         "typescript": "^5.9.3"
     },
