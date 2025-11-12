@@ -2,23 +2,46 @@
 import { SQLiteColumn } from './orm'
 import { Mode } from './types'
 
-export const text = <TName extends string, TEnum extends readonly string[]>(
+export const text = <
+    TName extends string,
+    TMode extends 'default' | 'json' = 'default',
+    TEnum extends readonly string[] = never
+>(
     name: TName,
-    config?: { mode?: 'json'; enum?: TEnum }
-) => new SQLiteColumn<TName, 'TEXT', any, false, false, false, TEnum>(name, 'TEXT', config)
+    config?: { mode?: TMode; enum?: TEnum }
+) => new SQLiteColumn<TName, 'TEXT', TMode, false, false, false, TEnum>(name, 'TEXT', config as any)
 
-export const integer = <TName extends string>(name: TName, config?: { mode?: Mode }) =>
-    new SQLiteColumn<TName, 'INTEGER'>(name, 'INTEGER', config)
+export const integer = <
+    TName extends string,
+    TMode extends Mode = 'default'
+>(
+    name: TName,
+    config?: { mode?: TMode }
+) => new SQLiteColumn<TName, 'INTEGER', TMode>(name, 'INTEGER', config as any)
 
-export const real = <TName extends string>(name: TName) => new SQLiteColumn<TName, 'REAL'>(name, 'REAL')
+export const real = <TName extends string>(
+    name: TName
+) => new SQLiteColumn<TName, 'REAL', 'default'>(name, 'REAL')
 
-export const blob = <TName extends string>(name: TName, config?: { mode: 'json' | 'bigint' }) =>
-    new SQLiteColumn<TName, 'BLOB'>(name, 'BLOB', config)
+export const blob = <
+    TName extends string,
+    TMode extends 'json' | 'bigint' | 'default' = 'default'
+>(
+    name: TName,
+    config?: { mode?: TMode }
+) => new SQLiteColumn<TName, 'BLOB', TMode>(name, 'BLOB', config as any)
 
-export const boolean = <TName extends string>(name: TName) => new SQLiteColumn<TName, 'BOOLEAN'>(name, 'BOOLEAN')
+export const boolean = <TName extends string>(
+    name: TName
+) => new SQLiteColumn<TName, 'BOOLEAN', 'default'>(name, 'BOOLEAN')
 
-export const numeric = <TName extends string>(name: TName, config?: { mode?: 'bigint' }) =>
-    new SQLiteColumn<TName, 'NUMERIC'>(name, 'NUMERIC', config)
+export const numeric = <
+    TName extends string,
+    TMode extends 'bigint' | 'default' = 'default'
+>(
+    name: TName,
+    config?: { mode?: TMode }
+) => new SQLiteColumn<TName, 'NUMERIC', TMode>(name, 'NUMERIC', config as any)
 
 export const enumType = <TName extends string, TValues extends readonly [string, ...string[]]>(
     name: TName,
