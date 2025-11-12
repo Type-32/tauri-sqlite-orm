@@ -5,15 +5,21 @@ import { Mode } from './types'
 export const text = <TName extends string, TEnum extends readonly string[]>(
     name: TName,
     config?: { mode?: 'json'; enum?: TEnum }
-) => new SQLiteColumn(name, 'TEXT', config, config?.mode)
-export const integer = <TName extends string, TMode extends Mode = 'default'>(name: TName, config?: { mode?: TMode }) =>
-    new SQLiteColumn(name, 'INTEGER', {}, config?.mode || 'default')
-export const real = <TName extends string>(name: TName) => new SQLiteColumn(name, 'REAL')
+) => new SQLiteColumn<TName, 'TEXT', any, false, false, false, TEnum>(name, 'TEXT', config)
+
+export const integer = <TName extends string>(name: TName, config?: { mode?: Mode }) =>
+    new SQLiteColumn<TName, 'INTEGER'>(name, 'INTEGER', config)
+
+export const real = <TName extends string>(name: TName) => new SQLiteColumn<TName, 'REAL'>(name, 'REAL')
+
 export const blob = <TName extends string>(name: TName, config?: { mode: 'json' | 'bigint' }) =>
-    new SQLiteColumn(name, 'BLOB', {}, config?.mode)
-export const boolean = <TName extends string>(name: TName) => new SQLiteColumn(name, 'BOOLEAN')
+    new SQLiteColumn<TName, 'BLOB'>(name, 'BLOB', config)
+
+export const boolean = <TName extends string>(name: TName) => new SQLiteColumn<TName, 'BOOLEAN'>(name, 'BOOLEAN')
+
 export const numeric = <TName extends string>(name: TName, config?: { mode?: 'bigint' }) =>
-    new SQLiteColumn(name, 'NUMERIC', {}, config?.mode)
+    new SQLiteColumn<TName, 'NUMERIC'>(name, 'NUMERIC', config)
+
 export const enumType = <TName extends string, TValues extends readonly [string, ...string[]]>(
     name: TName,
     values: TValues
