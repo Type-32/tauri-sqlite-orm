@@ -5,6 +5,7 @@ A Drizzle-like TypeScript ORM tailored for Tauri v2's `@tauri-apps/plugin-sql` (
 ### Features
 
 - **Drizzle-like Schema:** Define your database schema using a familiar, chainable API.
+- **Strict Type Inference:** Full TypeScript type safety with no `any` types - nullable columns, custom types, and required/optional fields are accurately inferred.
 - **Type-Safe Query Builder:** Build SQL queries with TypeScript, ensuring type safety and autocompletion.
 - **Relations Support:** Define and query one-to-one, one-to-many, and many-to-many relationships between tables.
 - **Nested Includes:** Load relations of relations with intuitive nested syntax.

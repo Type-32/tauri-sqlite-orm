@@ -6,7 +6,7 @@ export type Mode = 'default' | 'timestamp' | 'timestamp_ms' | 'json' | 'boolean'
 // Column Value Types Mapping
 export type ColumnValueTypes<TType extends ColumnDataType, TMode extends Mode> = TType extends 'TEXT'
     ? TMode extends 'json'
-        ? any
+        ? unknown // Use unknown instead of any for JSON - requires $type<T>() for proper typing
         : string
     : TType extends 'INTEGER'
     ? TMode extends 'timestamp' | 'timestamp_ms'
@@ -20,7 +20,7 @@ export type ColumnValueTypes<TType extends ColumnDataType, TMode extends Mode> =
     ? boolean
     : TType extends 'BLOB'
     ? TMode extends 'json'
-        ? any
+        ? unknown // Use unknown instead of any for JSON - requires $type<T>() for proper typing
         : TMode extends 'bigint'
         ? bigint
         : Uint8Array
@@ -47,20 +47,27 @@ export interface ColumnOptions<TData, TEnum extends readonly string[] = readonly
     enum?: TEnum
 }
 
-// Extract column value type
-export type ExtractColumnType<T extends AnySQLiteColumn> = T['_']['customType'] extends never
-    ? T['_']['enum'] extends readonly string[]
-        ? T['_']['enum'][number]
-        : T extends SQLiteColumn<infer _, infer TType, infer TMode, infer TNotNull, infer THasDefault>
-        ? THasDefault extends true
-            ? TNotNull extends true
-                ? ColumnValueTypes<TType, TMode>
-                : ColumnValueTypes<TType, TMode> | null | undefined
-            : TNotNull extends true
-            ? ColumnValueTypes<TType, TMode>
-            : ColumnValueTypes<TType, TMode> | null | undefined
-        : never
-    : T['_']['customType']
+// Extract column value type for SELECT queries
+export type ExtractColumnType<T extends AnySQLiteColumn> = 
+    // First check if custom type is set (from $type<T>())
+    T['_']['customType'] extends never
+        ? // No custom type, check if it's an enum
+          T['_']['enum'] extends readonly string[]
+            ? // Enum type - return union of enum values, add null if nullable
+              T['_']['notNull'] extends true
+                ? T['_']['enum'][number]
+                : T['_']['enum'][number] | null
+            : // Not an enum, extract from column type parameters
+              T extends SQLiteColumn<infer _, infer TType, infer TMode, infer TNotNull, infer THasDefault>
+                ? // Check if column is NOT NULL
+                  TNotNull extends true
+                    ? ColumnValueTypes<TType, TMode> // Non-nullable
+                    : ColumnValueTypes<TType, TMode> | null // Nullable
+                : never
+        : // Custom type is set - use it and respect notNull
+          T['_']['notNull'] extends true
+            ? T['_']['customType'] // Non-nullable custom type
+            : T['_']['customType'] | null // Nullable custom type
 // Table Types
 export type AnySQLiteColumn = SQLiteColumn<any, any, any, any, any, any, any, any>
 export type AnyTable = Table<Record<string, AnySQLiteColumn>, string>
