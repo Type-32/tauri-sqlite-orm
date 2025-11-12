@@ -9,7 +9,7 @@ export const text = <
 >(
     name: TName,
     config?: { mode?: TMode; enum?: TEnum }
-) => new SQLiteColumn<TName, 'TEXT', TMode, false, false, false, TEnum>(name, 'TEXT', config as any)
+) => new SQLiteColumn<TName, 'TEXT', TMode, false, false, false, TEnum, never>(name, 'TEXT', config as any)
 
 export const integer = <
     TName extends string,
@@ -17,11 +17,11 @@ export const integer = <
 >(
     name: TName,
     config?: { mode?: TMode }
-) => new SQLiteColumn<TName, 'INTEGER', TMode>(name, 'INTEGER', config as any)
+) => new SQLiteColumn<TName, 'INTEGER', TMode, false, false, false, never, never>(name, 'INTEGER', config as any)
 
 export const real = <TName extends string>(
     name: TName
-) => new SQLiteColumn<TName, 'REAL', 'default'>(name, 'REAL')
+) => new SQLiteColumn<TName, 'REAL', 'default', false, false, false, never, never>(name, 'REAL')
 
 export const blob = <
     TName extends string,
@@ -29,11 +29,11 @@ export const blob = <
 >(
     name: TName,
     config?: { mode?: TMode }
-) => new SQLiteColumn<TName, 'BLOB', TMode>(name, 'BLOB', config as any)
+) => new SQLiteColumn<TName, 'BLOB', TMode, false, false, false, never, never>(name, 'BLOB', config as any)
 
 export const boolean = <TName extends string>(
     name: TName
-) => new SQLiteColumn<TName, 'BOOLEAN', 'default'>(name, 'BOOLEAN')
+) => new SQLiteColumn<TName, 'BOOLEAN', 'default', false, false, false, never, never>(name, 'BOOLEAN')
 
 export const numeric = <
     TName extends string,
@@ -41,7 +41,7 @@ export const numeric = <
 >(
     name: TName,
     config?: { mode?: TMode }
-) => new SQLiteColumn<TName, 'NUMERIC', TMode>(name, 'NUMERIC', config as any)
+) => new SQLiteColumn<TName, 'NUMERIC', TMode, false, false, false, never, never>(name, 'NUMERIC', config as any)
 
 export const enumType = <TName extends string, TValues extends readonly [string, ...string[]]>(
     name: TName,

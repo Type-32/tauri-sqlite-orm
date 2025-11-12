@@ -48,26 +48,26 @@ export interface ColumnOptions<TData, TEnum extends readonly string[] = readonly
 }
 
 // Extract column value type for SELECT queries
+// For SELECT: only notNull matters for nullability (defaults/autoincrement don't make DB value non-null)
 export type ExtractColumnType<T extends AnySQLiteColumn> = 
-    // First check if custom type is set (from $type<T>())
-    T['_']['customType'] extends never
+    T extends SQLiteColumn<infer _, infer TType, infer TMode, infer TNotNull, infer THasDefault, infer TAutoincrement, infer TEnum, infer TCustomType>
+        ? // First check if custom type is set (from $type<T>())
+          [TCustomType] extends [never]
         ? // No custom type, check if it's an enum
-          T['_']['enum'] extends readonly string[]
-            ? // Enum type - return union of enum values, add null if nullable
-              T['_']['notNull'] extends true
-                ? T['_']['enum'][number]
-                : T['_']['enum'][number] | null
-            : // Not an enum, extract from column type parameters
-              T extends SQLiteColumn<infer _, infer TType, infer TMode, infer TNotNull, infer THasDefault>
-                ? // Check if column is NOT NULL
+              [TEnum] extends [never]
+                ? // Not an enum, use ColumnValueTypes
                   TNotNull extends true
                     ? ColumnValueTypes<TType, TMode> // Non-nullable
                     : ColumnValueTypes<TType, TMode> | null // Nullable
+                : // Enum type - return union of enum values, add null if nullable
+                  TNotNull extends true
+                    ? TEnum[number]
+                    : TEnum[number] | null
+            : // Custom type is set - use it and respect notNull
+              TNotNull extends true
+                ? TCustomType // Non-nullable custom type
+                : TCustomType | null // Nullable custom type
                 : never
-        : // Custom type is set - use it and respect notNull
-          T['_']['notNull'] extends true
-            ? T['_']['customType'] // Non-nullable custom type
-            : T['_']['customType'] | null // Nullable custom type
 // Table Types
 export type AnySQLiteColumn = SQLiteColumn<any, any, any, any, any, any, any, any>
 export type AnyTable = Table<Record<string, AnySQLiteColumn>, string>

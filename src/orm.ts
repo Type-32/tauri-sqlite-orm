@@ -143,10 +143,31 @@ type RequiredColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
     [K in keyof TColumns]: IsOptionalOnInsert<TColumns[K]> extends true ? never : K
 }[keyof TColumns]
 
+// Extract column type for INSERT - respect notNull even when optional
+type ExtractInsertColumnType<T extends AnySQLiteColumn> = 
+    T extends SQLiteColumn<infer _, infer TType, infer TMode, infer TNotNull, infer THasDefault, infer TAutoincrement, infer TEnum, infer TCustomType>
+        ? // First check if custom type is set (from $type<T>())
+          [TCustomType] extends [never]
+            ? // No custom type, check if it's an enum
+              [TEnum] extends [never]
+                ? // Not an enum, use ColumnValueTypes
+                  TNotNull extends true
+                    ? ColumnValueTypes<TType, TMode> // Non-nullable
+                    : ColumnValueTypes<TType, TMode> | null // Nullable
+                : // Enum type
+                  TNotNull extends true
+                    ? TEnum[number]
+                    : TEnum[number] | null
+            : // Custom type is set
+              TNotNull extends true
+                ? TCustomType
+                : TCustomType | null
+        : never
+
 export type InferInsertModel<T extends AnyTable> = {
-    [K in RequiredColumns<T['_']['columns']>]: ExtractColumnType<T['_']['columns'][K]>
+    [K in RequiredColumns<T['_']['columns']>]: ExtractInsertColumnType<T['_']['columns'][K]>
 } & {
-    [K in OptionalColumns<T['_']['columns']>]?: ExtractColumnType<T['_']['columns'][K]>
+    [K in OptionalColumns<T['_']['columns']>]?: ExtractInsertColumnType<T['_']['columns'][K]>
 }
 
 export class Table<TColumns extends Record<string, AnySQLiteColumn>, TTableName extends string> {

@@ -19,6 +19,8 @@ A Drizzle-like TypeScript ORM tailored for Tauri v2's `@tauri-apps/plugin-sql` (
 - **Simplified Migrations:** Keep your database schema in sync with your application's models using automatic schema detection and migration tools.
 - **Lightweight & Performant:** Designed to be a thin layer over the Tauri SQL plugin, ensuring minimal overhead.
 
+Also, bun is the preferred package manager for developing this library, if you want to contribute.
+
 ### Installation
 
 ```bash
