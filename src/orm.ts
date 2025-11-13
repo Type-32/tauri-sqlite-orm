@@ -287,7 +287,128 @@ export class TauriORM {
         return sql
     }
 
-    async migrate(options?: { performDestructiveActions?: boolean }): Promise<void> {
+    async checkMigration(): Promise<{
+        safe: boolean
+        changes: {
+            tablesToCreate: string[]
+            tablesToRecreate: string[]
+            tablesToDrop: string[]
+            columnsToAdd: Array<{ table: string; column: string }>
+        }
+    }> {
+        const dbTables = await this.db.select<{ name: string }[]>(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+        )
+        const dbTableNames = new Set(dbTables.map((t) => t.name))
+        const schemaTableNames = new Set(Array.from(this.tables.keys()))
+
+        const changes = {
+            tablesToCreate: [] as string[],
+            tablesToRecreate: [] as string[],
+            tablesToDrop: [] as string[],
+            columnsToAdd: [] as Array<{ table: string; column: string }>,
+        }
+
+        // Check tables to create
+        for (const tableName of schemaTableNames) {
+            if (!dbTableNames.has(tableName)) {
+                changes.tablesToCreate.push(tableName)
+            }
+        }
+
+        // Check tables to drop
+        for (const tableName of dbTableNames) {
+            if (!schemaTableNames.has(tableName)) {
+                changes.tablesToDrop.push(tableName)
+            }
+        }
+
+        // Check for table recreation and column additions
+        for (const table of this.tables.values()) {
+            const tableName = table._.name
+            if (!dbTableNames.has(tableName)) continue
+
+            const existingTableInfo = await this.db.select<Array<{
+                name: string
+                type: string
+                notnull: number
+                dflt_value: any
+                pk: number
+            }>>(`PRAGMA table_info('${tableName}')`)
+
+            const existingIndexes = await this.db.select<Array<{
+                name: string
+                unique: number
+                origin: string
+            }>>(`PRAGMA index_list('${tableName}')`)
+
+            const uniqueColumns = new Set<string>()
+            for (const index of existingIndexes) {
+                if (index.unique === 1 && index.origin === 'u') {
+                    const indexInfo = await this.db.select<Array<{ name: string }>>(`PRAGMA index_info('${index.name}')`)
+                    if (indexInfo.length === 1) {
+                        uniqueColumns.add(indexInfo[0].name)
+                    }
+                }
+            }
+
+            const existingColumns = new Map(existingTableInfo.map(c => [c.name, c]))
+            const schemaColumns = table._.columns
+
+            let needsRecreate = false
+
+            for (const [colName, column] of Object.entries(schemaColumns)) {
+                const existing = existingColumns.get(colName)
+
+                if (!existing) {
+                    if (!this.canAddColumnWithAlter(column)) {
+                        needsRecreate = true
+                        break
+                    }
+                    changes.columnsToAdd.push({ table: tableName, column: colName })
+                } else {
+                    const hasUniqueInDB = uniqueColumns.has(colName)
+                    const wantsUnique = !!column.options.unique
+
+                    if (hasUniqueInDB !== wantsUnique || this.hasColumnDefinitionChanged(column, existing)) {
+                        needsRecreate = true
+                        break
+                    }
+                }
+            }
+
+            // Check for removed columns
+            for (const existingCol of existingColumns.keys()) {
+                if (!schemaColumns[existingCol]) {
+                    needsRecreate = true
+                    break
+                }
+            }
+
+            if (needsRecreate) {
+                changes.tablesToRecreate.push(tableName)
+            }
+        }
+
+        const safe = changes.tablesToRecreate.length === 0 && changes.tablesToDrop.length === 0
+
+        return { safe, changes }
+    }
+
+    async migrate(options?: { 
+        performDestructiveActions?: boolean
+        dryRun?: boolean
+    }): Promise<void> {
+        if (options?.dryRun) {
+            const check = await this.checkMigration()
+            console.log('[Tauri-ORM] Migration Preview (Dry Run):')
+            console.log('  Tables to create:', check.changes.tablesToCreate)
+            console.log('  Tables to recreate (DESTRUCTIVE):', check.changes.tablesToRecreate)
+            console.log('  Tables to drop:', check.changes.tablesToDrop)
+            console.log('  Columns to add:', check.changes.columnsToAdd)
+            console.log('  Safe migration:', check.safe)
+            return
+        }
         const dbTables = await this.db.select<{ name: string }[]>(
             `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
         )
