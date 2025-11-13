@@ -304,33 +304,88 @@ export class TauriORM {
                 const columnsSql = Object.values(table._.columns)
                     .map((col) => this.buildColumnDefinition(col))
                     .join(', ')
-                const createSql = `CREATE TABLE ${tableName}
-                                   (
-                                       ${columnsSql}
-                                   )`
+                const createSql = `CREATE TABLE ${tableName} (${columnsSql})`
                 await this.db.execute(createSql)
             } else {
-                // Table exists, add or remove columns
-                const existingTableInfo = await this.db.select<{ name: string }[]>(`PRAGMA table_info('${tableName}')`)
-                const existingColumnNames = new Set(existingTableInfo.map((c) => c.name))
-                const schemaColumnNames = new Set(Object.keys(table._.columns))
-
-                // Add missing columns
-                for (const column of Object.values(table._.columns)) {
-                    if (!existingColumnNames.has(column._.name)) {
-                        const columnSql = this.buildColumnDefinition(column, true)
-                        const alterSql = `ALTER TABLE ${tableName}
-                            ADD COLUMN ${columnSql}`
-                        await this.db.execute(alterSql)
+                // Table exists, check for schema changes
+                const existingTableInfo = await this.db.select<Array<{
+                    name: string
+                    type: string
+                    notnull: number
+                    dflt_value: any
+                    pk: number
+                }>>(`PRAGMA table_info('${tableName}')`)
+                
+                // Get existing UNIQUE constraints from indexes
+                const existingIndexes = await this.db.select<Array<{
+                    name: string
+                    unique: number
+                    origin: string
+                }>>(`PRAGMA index_list('${tableName}')`)
+                
+                const uniqueColumns = new Set<string>()
+                for (const index of existingIndexes) {
+                    if (index.unique === 1 && index.origin === 'u') {
+                        const indexInfo = await this.db.select<Array<{ name: string }>>(`PRAGMA index_info('${index.name}')`)
+                        if (indexInfo.length === 1) {
+                            uniqueColumns.add(indexInfo[0].name)
+                        }
                     }
                 }
-
-                // Drop extra columns if destructive actions are enabled
-                if (options?.performDestructiveActions) {
-                    for (const colName of existingColumnNames) {
-                        if (!schemaColumnNames.has(colName)) {
-                            await this.dropColumn(tableName, colName)
+                
+                const existingColumns = new Map(existingTableInfo.map(c => [c.name, c]))
+                const schemaColumns = table._.columns
+                
+                // Check if we need to recreate the table (column definition changes)
+                let needsRecreate = false
+                const columnsToAdd: AnySQLiteColumn[] = []
+                
+                for (const [colName, column] of Object.entries(schemaColumns)) {
+                    const existing = existingColumns.get(colName)
+                    
+                    if (!existing) {
+                        // New column - check if it can be added with ALTER TABLE
+                        if (this.canAddColumnWithAlter(column)) {
+                            columnsToAdd.push(column)
+                        } else {
+                            needsRecreate = true
+                            break
                         }
+                    } else {
+                        // Existing column - check if definition changed
+                        const hasUniqueInDB = uniqueColumns.has(colName)
+                        const wantsUnique = !!column.options.unique
+                        
+                        if (hasUniqueInDB !== wantsUnique) {
+                            needsRecreate = true
+                            break
+                        }
+                        
+                        if (this.hasColumnDefinitionChanged(column, existing)) {
+                            needsRecreate = true
+                            break
+                        }
+                    }
+                }
+                
+                // Check for removed columns
+                if (options?.performDestructiveActions) {
+                    for (const existingCol of existingColumns.keys()) {
+                        if (!schemaColumns[existingCol]) {
+                            needsRecreate = true
+                            break
+                        }
+                    }
+                }
+                
+                if (needsRecreate) {
+                    // Recreate table with new schema
+                    await this.recreateTable(tableName, table)
+                } else if (columnsToAdd.length > 0) {
+                    // Just add new columns with ALTER TABLE
+                    for (const column of columnsToAdd) {
+                        const columnSql = this.buildColumnDefinition(column, true)
+                        await this.db.execute(`ALTER TABLE ${tableName} ADD COLUMN ${columnSql}`)
                     }
                 }
             }
@@ -344,6 +399,71 @@ export class TauriORM {
                 }
             }
         }
+    }
+    
+    private canAddColumnWithAlter(column: AnySQLiteColumn): boolean {
+        // SQLite ALTER TABLE ADD COLUMN has limitations:
+        // - Cannot add PRIMARY KEY
+        // - Cannot add UNIQUE (without using a workaround)
+        // - Can add NOT NULL only if column has a DEFAULT value
+        if (column.options.primaryKey) return false
+        if (column.options.unique) return false
+        if (column._.notNull && column.options.default === undefined && !column.options.$defaultFn) return false
+        return true
+    }
+    
+    private hasColumnDefinitionChanged(column: AnySQLiteColumn, existing: {
+        name: string
+        type: string
+        notnull: number
+        dflt_value: any
+        pk: number
+    }): boolean {
+        // Check if column type changed (normalize to uppercase)
+        if (column.type.toUpperCase() !== existing.type.toUpperCase()) return true
+        
+        // Check if NOT NULL changed
+        if (column._.notNull !== (existing.notnull === 1)) return true
+        
+        // Check if PRIMARY KEY changed
+        if (!!column.options.primaryKey !== (existing.pk === 1)) return true
+        
+        // Check if default value changed
+        const hasDefault = column.options.default !== undefined
+        const existingHasDefault = existing.dflt_value !== null
+        if (hasDefault !== existingHasDefault) return true
+        
+        // Check UNIQUE constraint (requires checking indexes)
+        // For now, we'll check UNIQUE separately if needed
+        
+        return false
+    }
+    
+    private async recreateTable(tableName: string, table: AnyTable): Promise<void> {
+        const tempTableName = `${tableName}_new_${Date.now()}`
+        
+        // Create new table with updated schema
+        const columnsSql = Object.values(table._.columns)
+            .map((col) => this.buildColumnDefinition(col))
+            .join(', ')
+        await this.db.execute(`CREATE TABLE ${tempTableName} (${columnsSql})`)
+        
+        // Copy data from old table (only columns that exist in both)
+        const oldColumns = await this.db.select<Array<{ name: string }>>(`PRAGMA table_info('${tableName}')`)
+        const oldColumnNames = oldColumns.map(c => c.name)
+        const newColumnNames = Object.keys(table._.columns)
+        const commonColumns = oldColumnNames.filter(name => newColumnNames.includes(name))
+        
+        if (commonColumns.length > 0) {
+            const columnsList = commonColumns.join(', ')
+            await this.db.execute(
+                `INSERT INTO ${tempTableName} (${columnsList}) SELECT ${columnsList} FROM ${tableName}`
+            )
+        }
+        
+        // Drop old table and rename new table
+        await this.db.execute(`DROP TABLE ${tableName}`)
+        await this.db.execute(`ALTER TABLE ${tempTableName} RENAME TO ${tableName}`)
     }
 
     select<T extends AnyTable, C extends (keyof T['_']['columns'])[] | undefined = undefined>(
