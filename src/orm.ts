@@ -170,18 +170,23 @@ export type InferInsertModel<T extends AnyTable> = {
     [K in OptionalColumns<T['_']['columns']>]?: ExtractInsertColumnType<T['_']['columns'][K]>
 }
 
-export class Table<TColumns extends Record<string, AnySQLiteColumn>, TTableName extends string> {
+export class Table<
+    TColumns extends Record<string, AnySQLiteColumn>,
+    TTableName extends string,
+    TRelations extends Record<string, RelationConfig> = {}
+> {
     _: {
         name: TTableName
         columns: TColumns
     }
-    relations: Record<string, RelationConfig> = {}
+    relations: TRelations
 
-    constructor(name: TTableName, columns: TColumns) {
+    constructor(name: TTableName, columns: TColumns, relations?: TRelations) {
         this._ = {
             name,
             columns,
         }
+        this.relations = (relations || {}) as TRelations
     }
 }
 
@@ -249,13 +254,23 @@ export const sql = <T = unknown>(
     }
 }
 
+// Extract table types from schema
+type ExtractTablesFromSchema<S> = {
+    [K in keyof S]: S[K] extends AnyTable ? S[K] : never
+}
+
+// Get table by name from schema
+type GetTableByName<S, N extends string> = {
+    [K in keyof S]: S[K] extends Table<any, N, any> ? S[K] : never
+}[keyof S]
+
 // Main ORM Class
-export class TauriORM {
+export class TauriORM<TSchema extends Record<string, any> = Record<string, any>> {
     private tables: Map<string, AnyTable> = new Map()
 
     constructor(
         private db: Database,
-        schema: Record<string, AnyTable | Record<string, Relation>> | undefined = undefined
+        schema?: TSchema
     ) {
         if (schema) {
             // First pass: register all tables
@@ -275,19 +290,128 @@ export class TauriORM {
                 sql += ' AUTOINCREMENT'
             }
         }
-        if (col._.notNull) sql += ' NOT NULL'
-        if (col.options.unique) sql += ' UNIQUE'
-        if (col.options.default !== undefined) {
-            const value = col.options.default
-            sql += ` DEFAULT ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`
+        
+        // For ALTER TABLE ADD COLUMN, SQLite has restrictions:
+        // - Can't add PRIMARY KEY, UNIQUE, or non-constant DEFAULT
+        // - Can add NOT NULL only if there's a DEFAULT
+        if (forAlterTable) {
+            // Only add NOT NULL if there's a default value
+            if (col._.notNull && col.options.default !== undefined) {
+                sql += ' NOT NULL'
+            }
+            // Add DEFAULT if it's a simple constant value
+            if (col.options.default !== undefined) {
+                const value = col.options.default
+                sql += ` DEFAULT ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`
+            }
+            // Can't add UNIQUE, PRIMARY KEY, or FOREIGN KEY constraints in ALTER TABLE ADD COLUMN
+        } else {
+            // For CREATE TABLE, add all constraints
+            if (col._.notNull) sql += ' NOT NULL'
+            if (col.options.unique) sql += ' UNIQUE'
+            if (col.options.default !== undefined) {
+                const value = col.options.default
+                sql += ` DEFAULT ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`
+            }
+            if (col.options.references) {
+                sql += ` REFERENCES ${col.options.references.table._.name}(${col.options.references.column._.name})`
+            }
         }
-        if (col.options.references) {
-            sql += ` REFERENCES ${col.options.references.table._.name}(${col.options.references.column._.name})`
-        }
+        
         return sql
     }
 
-    async migrate(options?: { performDestructiveActions?: boolean }): Promise<void> {
+    private async getTableInfo(tableName: string): Promise<{
+        cid: number
+        name: string
+        type: string
+        notnull: number
+        dflt_value: any
+        pk: number
+    }[]> {
+        return await this.db.select(`PRAGMA table_info('${tableName}')`)
+    }
+
+    private async needsTableRecreation(tableName: string, table: AnyTable): Promise<boolean> {
+        const existingCols = await this.getTableInfo(tableName)
+        const existingColMap = new Map(existingCols.map(c => [c.name, c]))
+        
+        // Check if any existing column has changed in a way that requires recreation
+        for (const [colName, schemaCol] of Object.entries(table._.columns)) {
+            const existingCol = existingColMap.get(colName)
+            if (existingCol) {
+                // Column exists - check if constraints changed
+                const schemaUnique = !!schemaCol.options.unique
+                const schemaPK = !!schemaCol.options.primaryKey
+                
+                // Check if UNIQUE or PRIMARY KEY was added (we can't determine current UNIQUE from PRAGMA)
+                // If PK changed, need recreation
+                if (existingCol.pk !== (schemaPK ? 1 : 0)) {
+                    return true
+                }
+                
+                // If type changed significantly, need recreation
+                if (existingCol.type.toUpperCase() !== schemaCol.type.toUpperCase()) {
+                    return true
+                }
+            }
+        }
+        
+        // Check if any new column has constraints that can't be added via ALTER TABLE
+        for (const [colName, schemaCol] of Object.entries(table._.columns)) {
+            if (!existingColMap.has(colName)) {
+                // New column - check if it has constraints that require recreation
+                if (schemaCol.options.unique || schemaCol.options.primaryKey || schemaCol.options.references) {
+                    return true
+                }
+                // NOT NULL without default requires recreation
+                if (schemaCol._.notNull && schemaCol.options.default === undefined && !schemaCol.options.$defaultFn) {
+                    return true
+                }
+            }
+        }
+        
+        return false
+    }
+
+    private async recreateTable(tableName: string, table: AnyTable): Promise<void> {
+        const tempTableName = `${tableName}_new_${Date.now()}`
+        
+        // 1. Create new table with correct schema
+        const columnsSql = Object.values(table._.columns)
+            .map((col) => this.buildColumnDefinition(col, false))
+            .join(', ')
+        await this.db.execute(`CREATE TABLE ${tempTableName} (${columnsSql})`)
+        
+        // 2. Copy data from old table to new table
+        const existingCols = await this.getTableInfo(tableName)
+        const existingColNames = existingCols.map(c => c.name)
+        const schemaColNames = Object.keys(table._.columns)
+        
+        // Only copy columns that exist in both old and new schema
+        const commonCols = existingColNames.filter(name => schemaColNames.includes(name))
+        
+        if (commonCols.length > 0) {
+            const colsList = commonCols.map(name => `"${name}"`).join(', ')
+            await this.db.execute(
+                `INSERT INTO ${tempTableName} (${colsList}) SELECT ${colsList} FROM ${tableName}`
+            )
+        }
+        
+        // 3. Drop old table
+        await this.db.execute(`DROP TABLE ${tableName}`)
+        
+        // 4. Rename new table to original name
+        await this.db.execute(`ALTER TABLE ${tempTableName} RENAME TO ${tableName}`)
+    }
+
+    async migrate(options?: { performDestructiveActions?: boolean; logging?: boolean }): Promise<void> {
+        const log = (message: string) => {
+            if (options?.logging !== false) {
+                console.log(`[Tauri-ORM Migration] ${message}`)
+            }
+        }
+
         const dbTables = await this.db.select<{ name: string }[]>(
             `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
         )
@@ -301,35 +425,42 @@ export class TauriORM {
 
             if (!tableExists) {
                 // Table does not exist, create it
+                log(`Creating table: ${tableName}`)
                 const columnsSql = Object.values(table._.columns)
                     .map((col) => this.buildColumnDefinition(col))
                     .join(', ')
-                const createSql = `CREATE TABLE ${tableName}
-                                   (
-                                       ${columnsSql}
-                                   )`
+                const createSql = `CREATE TABLE ${tableName} (${columnsSql})`
                 await this.db.execute(createSql)
             } else {
-                // Table exists, add or remove columns
-                const existingTableInfo = await this.db.select<{ name: string }[]>(`PRAGMA table_info('${tableName}')`)
-                const existingColumnNames = new Set(existingTableInfo.map((c) => c.name))
-                const schemaColumnNames = new Set(Object.keys(table._.columns))
+                // Table exists - check if we need to recreate it
+                const needsRecreation = await this.needsTableRecreation(tableName, table)
+                
+                if (needsRecreation) {
+                    log(`Recreating table ${tableName} (complex schema changes detected)`)
+                    await this.recreateTable(tableName, table)
+                } else {
+                    // Simple changes - use ALTER TABLE
+                    const existingTableInfo = await this.getTableInfo(tableName)
+                    const existingColumnNames = new Set(existingTableInfo.map((c) => c.name))
+                    const schemaColumnNames = new Set(Object.keys(table._.columns))
 
-                // Add missing columns
-                for (const column of Object.values(table._.columns)) {
-                    if (!existingColumnNames.has(column._.name)) {
-                        const columnSql = this.buildColumnDefinition(column, true)
-                        const alterSql = `ALTER TABLE ${tableName}
-                            ADD COLUMN ${columnSql}`
-                        await this.db.execute(alterSql)
+                    // Add missing columns
+                    for (const column of Object.values(table._.columns)) {
+                        if (!existingColumnNames.has(column._.name)) {
+                            log(`Adding column: ${tableName}.${column._.name}`)
+                            const columnSql = this.buildColumnDefinition(column, true)
+                            const alterSql = `ALTER TABLE ${tableName} ADD COLUMN ${columnSql}`
+                            await this.db.execute(alterSql)
+                        }
                     }
-                }
 
-                // Drop extra columns if destructive actions are enabled
-                if (options?.performDestructiveActions) {
-                    for (const colName of existingColumnNames) {
-                        if (!schemaColumnNames.has(colName)) {
-                            await this.dropColumn(tableName, colName)
+                    // Drop extra columns if destructive actions are enabled
+                    if (options?.performDestructiveActions) {
+                        for (const colName of existingColumnNames) {
+                            if (!schemaColumnNames.has(colName)) {
+                                log(`Dropping column: ${tableName}.${colName}`)
+                                await this.dropColumn(tableName, colName)
+                            }
                         }
                     }
                 }
@@ -340,6 +471,7 @@ export class TauriORM {
         if (options?.performDestructiveActions) {
             for (const tableName of dbTableNames) {
                 if (!schemaTableNames.has(tableName)) {
+                    log(`Dropping table: ${tableName}`)
                     await this.dropTable(tableName)
                 }
             }
@@ -349,15 +481,16 @@ export class TauriORM {
     select<T extends AnyTable, C extends (keyof T['_']['columns'])[] | undefined = undefined>(
         table: T,
         columns?: C
-    ): SelectQueryBuilder<T, C> {
+    ): SelectQueryBuilder<GetTableByName<TSchema, T['_']['name']> extends never ? T : GetTableByName<TSchema, T['_']['name']>, C> {
         const internalTable = this.tables.get(table._.name)
         if (!internalTable) {
             console.warn(
                 `[Tauri-ORM] Table "${table._.name}" was not passed in the schema to the ORM constructor. Relations will not be available.`
             )
-            return new SelectQueryBuilder(this.db, table, columns)
+            return new SelectQueryBuilder(this.db, table, columns as any) as any
         }
-        return new SelectQueryBuilder(this.db, internalTable as T, columns)
+        // Use the internal table which has relations attached
+        return new SelectQueryBuilder(this.db, internalTable, columns as any) as any
     }
 
     insert<T extends AnyTable>(table: T): InsertQueryBuilder<T> {
@@ -400,7 +533,7 @@ export class TauriORM {
         }
     }
 
-    async transaction<T>(callback: (tx: TauriORM) => Promise<T>): Promise<T> {
+    async transaction<T>(callback: (tx: TauriORM<TSchema>) => Promise<T>): Promise<T> {
         await this.db.execute('BEGIN TRANSACTION')
         try {
             const result = await callback(this)
@@ -497,10 +630,10 @@ export class TauriORM {
         return { dirty: sig !== stored, current: sig, stored }
     }
 
-    async migrateIfDirty(): Promise<boolean> {
+    async migrateIfDirty(options?: { performDestructiveActions?: boolean; logging?: boolean }): Promise<boolean> {
         const status = await this.isSchemaDirty()
         if (status.dirty) {
-            await this.migrate()
+            await this.migrate(options)
             await this.setSchemaMeta('schema_signature', this.computeModelSignature())
             return true
         }
@@ -611,19 +744,19 @@ export const relations = <T extends AnyTable, R extends Record<string, Relation>
 
     for (const [name, relation] of Object.entries(builtRelations)) {
         if (relation instanceof OneRelation) {
-            table.relations[name] = {
+            (table.relations as any)[name] = {
                 type: 'one',
                 foreignTable: relation.foreignTable,
                 fields: relation.config?.fields,
                 references: relation.config?.references,
             }
         } else if (relation instanceof ManyRelation) {
-            table.relations[name] = {
+            (table.relations as any)[name] = {
                 type: 'many',
                 foreignTable: relation.foreignTable,
             }
         } else if (relation instanceof ManyToManyRelation) {
-            table.relations[name] = {
+            (table.relations as any)[name] = {
                 type: 'manyToMany',
                 foreignTable: relation.foreignTable,
                 junctionTable: relation.config.junctionTable,
