@@ -3,6 +3,7 @@ import Database from "@tauri-apps/plugin-sql";
 import {InferInsertModel} from "../orm";
 import {AnySQLiteColumn, AnyTable, InferSelectModel} from "../types";
 import {InsertValidationError, ColumnNotFoundError} from "../errors";
+import {serializeValue} from "../serialization";
 
 export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
     private dataSets: InferInsertModel<T>[] = [];
@@ -129,13 +130,20 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
             )}) VALUES ${valuesSql}${conflictClause}`;
 
             const params = dataSets.flatMap((data) =>
-                columns.map((col) => (data as any)[col] ?? null)
+                columns.map((col) => {
+                    const value = (data as any)[col] ?? null;
+                    const column = this.table._.columns[col as string];
+                    return column ? serializeValue(value, column) : value;
+                })
             );
 
             // Add conflict update params
             if (this.onConflictAction === "update") {
                 const setValues = Object.entries(this.updateSet).map(
-                    ([, value]) => value
+                    ([key, value]) => {
+                        const column = this.table._.columns[key];
+                        return column ? serializeValue(value, column) : value;
+                    }
                 );
                 params.push(...setValues);
             }
@@ -200,13 +208,20 @@ export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
         )}) VALUES ${valuesSql}${conflictClause}`;
 
         const params = processedDataSets.flatMap((data) =>
-            columns.map((col) => (data as any)[col] ?? null)
+            columns.map((col) => {
+                const value = (data as any)[col] ?? null;
+                const column = this.table._.columns[col as string];
+                return column ? serializeValue(value, column) : value;
+            })
         );
 
         // Add conflict update params
         if (this.onConflictAction === "update") {
             const setValues = Object.entries(this.updateSet).map(
-                ([, value]) => value
+                ([key, value]) => {
+                    const column = this.table._.columns[key];
+                    return column ? serializeValue(value, column) : value;
+                }
             );
             params.push(...setValues);
         }

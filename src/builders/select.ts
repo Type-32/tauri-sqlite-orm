@@ -3,6 +3,7 @@ import Database from '@tauri-apps/plugin-sql'
 import { and, eq } from '../operators'
 import { SQLCondition } from '../orm'
 import { AnySQLiteColumn, AnyTable, InferSelectModel } from '../types'
+import { deserializeValue } from '../serialization'
 
 // Type for nested includes with better inference
 type NestedInclude = boolean | { with?: Record<string, NestedInclude> }
@@ -253,15 +254,18 @@ export class SelectQueryBuilder<
             return rawResults as InferSelectModel<TTable>[]
         }
 
-        // Strip prefixes for simple queries
+        // Strip prefixes and deserialize for simple queries
         const prefix = `${this.selectedTableAlias}.`
         return rawResults.map((row) => {
             const newRow: Record<string, any> = {}
             for (const key in row) {
-                if (key.startsWith(prefix)) {
-                    newRow[key.substring(prefix.length)] = row[key]
+                const columnName = key.startsWith(prefix) ? key.substring(prefix.length) : key
+                const column = this.table._.columns[columnName]
+                
+                if (column) {
+                    newRow[columnName] = deserializeValue(row[key], column)
                 } else {
-                    newRow[key] = row[key]
+                    newRow[columnName] = row[key]
                 }
             }
             return newRow
@@ -336,18 +340,26 @@ export class SelectQueryBuilder<
                     const [tableAlias, columnName] = key.split('.')
 
                     if (tableAlias === this.selectedTableAlias) {
-                        result[columnName] = value
+                        // Deserialize main table column
+                        const column = this.table._.columns[columnName]
+                        result[columnName] = column ? deserializeValue(value, column) : value
                     } else {
                         const relationPath = parseRelationPath(tableAlias, this.selectedTableAlias)
                         if (relationPath.length > 0) {
-                            setNestedValue(relations, relationPath, value, columnName)
+                            // For nested relations, find the column in the foreign table
+                            const relationConfig = getNestedRelation(this.table, relationPath)
+                            const column = relationConfig?.foreignTable?._.columns?.[columnName]
+                            const deserializedValue = column ? deserializeValue(value, column) : value
+                            setNestedValue(relations, relationPath, deserializedValue, columnName)
                         } else {
                             if (!result[tableAlias]) result[tableAlias] = {}
                             result[tableAlias][columnName] = value
                         }
                     }
                 } else {
-                    result[key] = value
+                    // Column without alias - try to find in main table
+                    const column = this.table._.columns[key]
+                    result[key] = column ? deserializeValue(value, column) : value
                 }
             }
 

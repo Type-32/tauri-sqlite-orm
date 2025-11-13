@@ -3,6 +3,7 @@ import Database from "@tauri-apps/plugin-sql";
 import {InferInsertModel} from "../orm";
 import {AnyTable, InferSelectModel} from "../types";
 import {MissingWhereClauseError, UpdateValidationError, ColumnNotFoundError} from "../errors";
+import {serializeValue} from "../serialization";
 
 export class UpdateQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
     private updateData: Partial<InferInsertModel<T>> = {};
@@ -99,7 +100,7 @@ export class UpdateQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
                     throw new ColumnNotFoundError(key, this.table._.name);
                 }
                 setClauses.push(`${column._.name} = ?`);
-                setParams.push(value);
+                setParams.push(serializeValue(value, column));
             }
         }
 
