@@ -236,9 +236,20 @@ export class SelectQueryBuilder<
         const { sql: joinSql, params: joinParams } = this.buildJoins()
 
         const distinct = this.isDistinct ? 'DISTINCT ' : ''
-        this.query = `SELECT ${distinct}${this.selectedColumns.join(', ')} ${this.query}`
-        this.query += joinSql
-        this.params.push(...joinParams)
+        
+        // Split the query to insert joins before WHERE clause
+        const whereIndex = this.query.indexOf(' WHERE ')
+        let fromPart = this.query
+        let wherePart = ''
+        
+        if (whereIndex !== -1) {
+            fromPart = this.query.substring(0, whereIndex)
+            wherePart = this.query.substring(whereIndex)
+        }
+        
+        // Build query in correct order: SELECT ... FROM ... JOIN ... WHERE ...
+        this.query = `SELECT ${distinct}${this.selectedColumns.join(', ')} ${fromPart}${joinSql}${wherePart}`
+        this.params = [...joinParams, ...this.params]
 
         const { sql, params } = this.build()
 
@@ -480,9 +491,19 @@ export class SelectQueryBuilder<
         
         const { sql: joinSql, params: joinParams } = this.buildJoins()
         
+        // Split query to insert joins before WHERE clause
+        const whereIndex = this.query.indexOf(' WHERE ')
+        let fromPart = this.query
+        let wherePart = ''
+        
+        if (whereIndex !== -1) {
+            fromPart = this.query.substring(0, whereIndex)
+            wherePart = this.query.substring(whereIndex)
+        }
+        
         // Build query with LIMIT 1 for efficiency
-        const query = `SELECT 1 ${this.query}${joinSql} LIMIT 1`
-        const params = [...this.params, ...joinParams]
+        const query = `SELECT 1 ${fromPart}${joinSql}${wherePart} LIMIT 1`
+        const params = [...joinParams, ...this.params]
         
         // Restore original columns
         this.selectedColumns = originalColumns
@@ -498,8 +519,18 @@ export class SelectQueryBuilder<
         
         const { sql: joinSql, params: joinParams } = this.buildJoins()
         
-        const query = `SELECT COUNT(*) as count ${this.query}${joinSql}`
-        const params = [...this.params, ...joinParams]
+        // Split query to insert joins before WHERE clause
+        const whereIndex = this.query.indexOf(' WHERE ')
+        let fromPart = this.query
+        let wherePart = ''
+        
+        if (whereIndex !== -1) {
+            fromPart = this.query.substring(0, whereIndex)
+            wherePart = this.query.substring(whereIndex)
+        }
+        
+        const query = `SELECT COUNT(*) as count ${fromPart}${joinSql}${wherePart}`
+        const params = [...joinParams, ...this.params]
         
         // Restore original columns
         this.selectedColumns = originalColumns
@@ -523,14 +554,27 @@ export class SelectQueryBuilder<
         
         const { sql: joinSql, params: joinParams } = this.buildJoins()
         
-        const query = `SELECT ${this.selectedColumns.join(', ')} ${this.query}${joinSql}`
-        const params = [...this.params, ...joinParams]
+        // Split query to insert joins before WHERE clause
+        const whereIndex = this.query.indexOf(' WHERE ')
+        let fromPart = this.query
+        let wherePart = ''
+        
+        if (whereIndex !== -1) {
+            fromPart = this.query.substring(0, whereIndex)
+            wherePart = this.query.substring(whereIndex)
+        }
+        
+        const query = `SELECT ${this.selectedColumns.join(', ')} ${fromPart}${joinSql}${wherePart}`
+        const params = [...joinParams, ...this.params]
         
         // Restore original columns
         this.selectedColumns = originalColumns
         
         const results = await this.db.select<any[]>(query, params)
-        return results.map(row => row[columnName]) as InferSelectModel<TTable>[K][]
+        
+        // Deserialize the column value
+        const col = this.table._.columns[column as string]
+        return results.map(row => col ? deserializeValue(row[columnName], col) : row[columnName]) as InferSelectModel<TTable>[K][]
     }
 
     async paginate(page: number = 1, pageSize: number = 10): Promise<{
