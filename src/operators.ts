@@ -72,11 +72,12 @@ export const isNull = (column: AnySQLiteColumn): Condition =>
 export const isNotNull = (column: AnySQLiteColumn): Condition =>
     sql<SqlBool>`${sql.ref(column._.name)} IS NOT NULL`
 
+// SQLite rejects EXISTS ((subquery)); use single paren level
 export const exists = (subquery: Expression<any>): Condition =>
-    sql<SqlBool>`EXISTS (${subquery})`
+    sql<SqlBool>`EXISTS ${subquery}`
 
 export const notExists = (subquery: Expression<any>): Condition =>
-    sql<SqlBool>`NOT EXISTS (${subquery})`
+    sql<SqlBool>`NOT EXISTS ${subquery}`
 
 export const eqSubquery = (column: AnySQLiteColumn, subquery: Expression<any>): Condition =>
     sql<SqlBool>`${sql.ref(column._.name)} = (${subquery})`

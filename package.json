@@ -17,7 +17,7 @@
     "scripts": {
         "build": "tsup src/index.ts --format esm,cjs --dts",
         "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
-        "test": "echo \"Error: no test specified\" && exit 1",
+        "test": "bun test",
         "release:minor": "bun run build && bun pm version minor && bun publish",
         "release:patch": "bun run build && bun pm version patch && bun publish"
     },

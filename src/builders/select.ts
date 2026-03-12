@@ -3,6 +3,23 @@ import { Condition } from '../operators'
 import { AnySQLiteColumn, AnyTable, InferSelectModel } from '../types'
 import { deserializeValue } from '../serialization'
 
+/** Map DB column names to TypeScript property names for a table */
+function getDbNameToTsName(table: AnyTable): Record<string, string> {
+    const map: Record<string, string> = {}
+    for (const [tsName, col] of Object.entries(table._.columns)) {
+        map[col._.name] = tsName
+    }
+    return map
+}
+
+/** Normalize result key - SQLite may return quoted aliases like "users.id" */
+function normalizeRowKey(key: string): string {
+    if (key.startsWith('"') && key.endsWith('"')) {
+        return key.slice(1, -1)
+    }
+    return key
+}
+
 type NestedInclude = boolean | { with?: Record<string, NestedInclude> }
 
 type ExtractRelationNames<T extends AnyTable> = T['relations'] extends Record<string, any>
@@ -257,12 +274,15 @@ export class SelectQueryBuilder<
         }
 
         const prefix = `${this._table._.name}.`
+        const dbNameToTs = getDbNameToTsName(this._table)
         return rawResults.map((row: any) => {
             const out: Record<string, any> = {}
             for (const key in row) {
-                const colName = key.startsWith(prefix) ? key.slice(prefix.length) : key
-                const column = this._table._.columns[colName]
-                out[colName] = column ? deserializeValue(row[key], column) : row[key]
+                const normKey = normalizeRowKey(key)
+                const dbColName = normKey.startsWith(prefix) ? normKey.slice(prefix.length) : normKey
+                const tsName = dbNameToTs[dbColName] ?? dbColName
+                const column = this._table._.columns[tsName]
+                out[tsName] = column ? deserializeValue(row[key], column) : row[key]
             }
             return out
         }) as InferSelectModel<TTable>[]
@@ -310,8 +330,12 @@ export class SelectQueryBuilder<
         }
 
         for (const row of rawResults) {
+            const getVal = (logicalKey: string) => {
+                const quoted = `"${logicalKey}"`
+                return row[quoted] ?? row[logicalKey]
+            }
             const mainTableKey = mainTablePks
-                .map((pk) => row[`${this._table._.name}.${pk}`] ?? row[pk])
+                .map((pk) => getVal(`${this._table._.name}.${pk}`) ?? getVal(pk))
                 .join('_')
 
             if (!groupedResults.has(mainTableKey)) {
@@ -322,25 +346,33 @@ export class SelectQueryBuilder<
             const relations: any = {}
 
             for (const [key, value] of Object.entries(row)) {
-                if (!key.includes('.')) {
-                    const column = this._table._.columns[key]
-                    result[key] = column ? deserializeValue(value, column) : value
+                const normKey = normalizeRowKey(key)
+                if (!normKey.includes('.')) {
+                    const mainDbToTs = getDbNameToTsName(this._table)
+                    const tsName = mainDbToTs[normKey] ?? normKey
+                    const column = this._table._.columns[tsName]
+                    result[tsName] = column ? deserializeValue(value, column) : value
                     continue
                 }
 
-                const dotIndex = key.indexOf('.')
-                const tableAlias = key.slice(0, dotIndex)
-                const columnName = key.slice(dotIndex + 1)
+                const dotIndex = normKey.indexOf('.')
+                const tableAlias = normKey.slice(0, dotIndex)
+                const columnName = normKey.slice(dotIndex + 1)
 
                 if (tableAlias === this._table._.name) {
-                    const column = this._table._.columns[columnName]
-                    result[columnName] = column ? deserializeValue(value, column) : value
+                    const mainDbToTs = getDbNameToTsName(this._table)
+                    const tsName = mainDbToTs[columnName] ?? columnName
+                    const column = this._table._.columns[tsName]
+                    result[tsName] = column ? deserializeValue(value, column) : value
                 } else {
                     const path = parseRelationPath(tableAlias, this._table._.name)
                     if (path.length > 0) {
                         const relationConfig = getNestedRelation(this._table, path)
-                        const col = relationConfig?.foreignTable?._.columns?.[columnName]
-                        setNestedValue(relations, path, columnName, col ? deserializeValue(value, col) : value)
+                        const foreignTable = relationConfig?.foreignTable
+                        const foreignDbToTs = foreignTable ? getDbNameToTsName(foreignTable) : {}
+                        const tsName = foreignDbToTs[columnName] ?? columnName
+                        const col = foreignTable?._.columns?.[tsName]
+                        setNestedValue(relations, path, tsName, col ? deserializeValue(value, col) : value)
                     } else {
                         if (!result[tableAlias]) result[tableAlias] = {}
                         result[tableAlias][columnName] = value
@@ -439,9 +471,11 @@ export class SelectQueryBuilder<
         this.applyIncludes()
         const result = await this._builder
             .clearSelect()
-            .select(sql<number>`COUNT(*) as count`.as('count'))
+            .select(sql<number>`COUNT(*)`.as('count'))
             .execute()
-        return Number(result[0]?.count ?? 0)
+        const row = result[0] as Record<string, any> | undefined
+        const val = row ? (row['"count"'] ?? row.count) : undefined
+        return Number(val ?? 0)
     }
 
     async pluck<K extends keyof TTable['_']['columns']>(
@@ -456,9 +490,10 @@ export class SelectQueryBuilder<
                 sql.raw(`${this._table._.name}.${alias}`).as(alias)
             )
             .execute()
-        return results.map((row: any) =>
-            col ? deserializeValue(row[alias], col) : row[alias]
-        ) as InferSelectModel<TTable>[K][]
+        return results.map((row: any) => {
+            const val = row['"' + alias + '"'] ?? row[alias]
+            return col ? deserializeValue(val, col) : val
+        }) as InferSelectModel<TTable>[K][]
     }
 
     async paginate(

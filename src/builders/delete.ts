@@ -2,6 +2,7 @@ import { Kysely } from 'kysely'
 import { AnyTable, InferSelectModel } from '../types'
 import { MissingWhereClauseError } from '../errors'
 import { Condition } from '../operators'
+import { deserializeValue } from '../serialization'
 
 export class DeleteQueryBuilder<T extends AnyTable> {
     private _builder: any
@@ -13,6 +14,24 @@ export class DeleteQueryBuilder<T extends AnyTable> {
     constructor(private readonly kysely: Kysely<any>, table: T) {
         this._table = table
         this._builder = kysely.deleteFrom(table._.name)
+    }
+
+    private mapReturningRows(rows: any[]): InferSelectModel<T>[] {
+        const dbNameToTs: Record<string, string> = {}
+        for (const [tsName, col] of Object.entries(this._table._.columns)) {
+            dbNameToTs[col._.name] = tsName
+        }
+        const norm = (k: string) => (k.startsWith('"') && k.endsWith('"') ? k.slice(1, -1) : k)
+        return rows.map((row: Record<string, any>) => {
+            const out: Record<string, any> = {}
+            for (const [dbKey, value] of Object.entries(row)) {
+                const logicalKey = norm(dbKey)
+                const tsName = dbNameToTs[logicalKey] ?? logicalKey
+                const column = this._table._.columns[tsName]
+                out[tsName] = column ? deserializeValue(value, column) : value
+            }
+            return out
+        }) as InferSelectModel<T>[]
     }
 
     where(condition: Condition): this {
@@ -40,7 +59,8 @@ export class DeleteQueryBuilder<T extends AnyTable> {
             const cols = this._returningColumns.map(
                 (k) => this._table._.columns[k as string]._.name
             )
-            return this._builder.returning(cols).execute() as any
+            const rows = await this._builder.returning(cols).execute()
+            return this.mapReturningRows(rows) as any
         }
 
         const result = await this._builder.executeTakeFirst()

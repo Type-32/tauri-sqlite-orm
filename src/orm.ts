@@ -1,5 +1,5 @@
-import Database from '@tauri-apps/plugin-sql'
 import { Expression, Kysely, sql as kyselySql, SqlBool } from 'kysely'
+import { DatabaseLike, TauriDialect } from './dialect'
 import {
     SelectQueryBuilder,
     InsertQueryBuilder,
@@ -18,7 +18,6 @@ import {
     Mode,
     RelationConfig,
 } from './types'
-import { TauriDialect } from './dialect'
 
 // Column class
 export class SQLiteColumn<
@@ -211,7 +210,7 @@ export class TauriORM {
     private kysely: Kysely<any>
 
     constructor(
-        private db: Database,
+        private db: DatabaseLike,
         schema: Record<string, AnyTable | Record<string, Relation>> | undefined = undefined
     ) {
         this.kysely = new Kysely({ dialect: new TauriDialect(db) })
@@ -316,16 +315,17 @@ export class TauriORM {
             let needsRecreate = false
 
             for (const [colName, column] of Object.entries(schemaColumns)) {
-                const existing = existingColumns.get(colName)
+                const dbColName = column._.name
+                const existing = existingColumns.get(dbColName)
 
                 if (!existing) {
                     if (!this.canAddColumnWithAlter(column)) {
                         needsRecreate = true
                         break
                     }
-                    changes.columnsToAdd.push({ table: tableName, column: colName })
+                    changes.columnsToAdd.push({ table: tableName, column: dbColName })
                 } else {
-                    const hasUniqueInDB = uniqueColumns.has(colName)
+                    const hasUniqueInDB = uniqueColumns.has(dbColName)
                     const wantsUnique = !!column.options.unique
 
                     if (hasUniqueInDB !== wantsUnique || this.hasColumnDefinitionChanged(column, existing)) {
@@ -335,9 +335,10 @@ export class TauriORM {
                 }
             }
 
-            // Check for removed columns
+            // Check for removed columns (existingCol is DB name)
             for (const existingCol of existingColumns.keys()) {
-                if (!schemaColumns[existingCol]) {
+                const schemaHasCol = Object.values(schemaColumns).some((c) => c._.name === existingCol)
+                if (!schemaHasCol) {
                     needsRecreate = true
                     break
                 }
@@ -420,7 +421,8 @@ export class TauriORM {
                 const columnsToAdd: AnySQLiteColumn[] = []
                 
                 for (const [colName, column] of Object.entries(schemaColumns)) {
-                    const existing = existingColumns.get(colName)
+                    const dbColName = column._.name
+                    const existing = existingColumns.get(dbColName)
                     
                     if (!existing) {
                         // New column - check if it can be added with ALTER TABLE
@@ -432,7 +434,7 @@ export class TauriORM {
                         }
                     } else {
                         // Existing column - check if definition changed
-                        const hasUniqueInDB = uniqueColumns.has(colName)
+                        const hasUniqueInDB = uniqueColumns.has(dbColName)
                         const wantsUnique = !!column.options.unique
                         
                         if (hasUniqueInDB !== wantsUnique) {
@@ -447,10 +449,11 @@ export class TauriORM {
                     }
                 }
                 
-                // Check for removed columns
+                // Check for removed columns (existingCol is DB name)
                 if (options?.performDestructiveActions) {
                     for (const existingCol of existingColumns.keys()) {
-                        if (!schemaColumns[existingCol]) {
+                        const schemaHasCol = Object.values(schemaColumns).some((c) => c._.name === existingCol)
+                        if (!schemaHasCol) {
                             needsRecreate = true
                             break
                         }
@@ -530,7 +533,7 @@ export class TauriORM {
         // Copy data from old table (only columns that exist in both)
         const oldColumns = await this.db.select<Array<{ name: string }>>(`PRAGMA table_info('${tableName}')`)
         const oldColumnNames = oldColumns.map(c => c.name)
-        const newColumnNames = Object.keys(table._.columns)
+        const newColumnNames = Object.values(table._.columns).map(c => c._.name)
         const commonColumns = oldColumnNames.filter(name => newColumnNames.includes(name))
         
         if (commonColumns.length > 0) {
@@ -600,9 +603,15 @@ export class TauriORM {
     }
 
     async transaction<T>(callback: (tx: TauriORM) => Promise<T>): Promise<T> {
-        return this.kysely.transaction().execute(async () => {
-            return callback(this)
-        })
+        await this.db.execute('BEGIN')
+        try {
+            const result = await callback(this)
+            await this.db.execute('COMMIT')
+            return result
+        } catch (e) {
+            await this.db.execute('ROLLBACK')
+            throw e
+        }
     }
 
     rollback(): never {

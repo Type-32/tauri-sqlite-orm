@@ -2,7 +2,7 @@ import { Kysely, sql } from 'kysely'
 import { InferInsertModel } from '../orm'
 import { AnyTable, InferSelectModel } from '../types'
 import { MissingWhereClauseError, UpdateValidationError, ColumnNotFoundError } from '../errors'
-import { serializeValue } from '../serialization'
+import { serializeValue, deserializeValue } from '../serialization'
 import { Condition } from '../operators'
 
 export class UpdateQueryBuilder<T extends AnyTable> {
@@ -58,6 +58,24 @@ export class UpdateQueryBuilder<T extends AnyTable> {
         return this
     }
 
+    private mapReturningRows(rows: any[]): InferSelectModel<T>[] {
+        const dbNameToTs: Record<string, string> = {}
+        for (const [tsName, col] of Object.entries(this._table._.columns)) {
+            dbNameToTs[col._.name] = tsName
+        }
+        const norm = (k: string) => (k.startsWith('"') && k.endsWith('"') ? k.slice(1, -1) : k)
+        return rows.map((row: Record<string, any>) => {
+            const out: Record<string, any> = {}
+            for (const [dbKey, value] of Object.entries(row)) {
+                const logicalKey = norm(dbKey)
+                const tsName = dbNameToTs[logicalKey] ?? logicalKey
+                const column = this._table._.columns[tsName]
+                out[tsName] = column ? deserializeValue(value, column) : value
+            }
+            return out
+        }) as InferSelectModel<T>[]
+    }
+
     private buildSetClause(): Record<string, any> {
         const finalData: Partial<InferInsertModel<T>> = { ...this._updateData }
 
@@ -107,7 +125,8 @@ export class UpdateQueryBuilder<T extends AnyTable> {
             const cols = this._returningColumns.map(
                 (k) => this._table._.columns[k as string]._.name
             )
-            return builder.returning(cols).execute() as any
+            const rows = await builder.returning(cols).execute()
+            return this.mapReturningRows(rows) as any
         }
 
         const result = await builder.executeTakeFirst()
