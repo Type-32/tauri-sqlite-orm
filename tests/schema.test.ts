@@ -136,7 +136,7 @@ describe('isSchemaDirty() and migrateIfDirty()', () => {
         const cascadeTable = sqliteTable('_cascade_test', {
             id: integer('id').primaryKey().autoincrement(),
             refId: integer('ref_id')
-                .references(users, users._.columns.id, { onDelete: 'cascade', onUpdate: 'restrict' }),
+                .references(() => users.id, { onDelete: 'cascade', onUpdate: 'restrict' }),
         })
         const ormCascade = new TauriORM(db, { ...schema, _cascade_test: cascadeTable })
         await ormCascade.migrate()
@@ -150,6 +150,22 @@ describe('isSchemaDirty() and migrateIfDirty()', () => {
         expect((createSql[0]?.sql ?? '').toUpperCase()).toContain('ON DELETE CASCADE')
         expect((createSql[0]?.sql ?? '').toUpperCase()).toContain('ON UPDATE RESTRICT')
         await ormCascade.dropTable('_cascade_test')
+    })
+
+    test('references() getter allows self-reference (e.g. messages.quotingMessageId)', async () => {
+        const messages = sqliteTable('_self_ref_messages', {
+            id: integer('id').primaryKey().autoincrement(),
+            text: text('text').notNull(),
+            quotingMessageId: integer('quoting_message_id').references(() => messages.id),
+        })
+        const ormSelfRef = new TauriORM(db, { ...schema, _self_ref_messages: messages })
+        await ormSelfRef.migrate()
+        expect(await ormSelfRef.doesTableExist('_self_ref_messages')).toBe(true)
+        const createSql = await db.select<any[]>(
+            `SELECT sql FROM sqlite_master WHERE type='table' AND name='_self_ref_messages'`
+        )
+        expect((createSql[0]?.sql ?? '').toUpperCase()).toContain('REFERENCES _SELF_REF_MESSAGES(ID)')
+        await ormSelfRef.dropTable('_self_ref_messages')
     })
 
     test('migrateIfDirty() returns false when already in sync', async () => {

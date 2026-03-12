@@ -2,7 +2,7 @@
  * Production schema adapted from Drizzle for tauri-sqlite-orm tests.
  *
  * Differences from Drizzle:
- * - references(table, column) - uses column directly: references(user, user._.columns.id)
+ * - references(() => table.column) - Drizzle-style lazy getter for self-refs and forward refs
  * - No composite primaryKey() - junction tables use separate columns (limitation)
  * - No index() support in table definition
  * - No onDelete/onUpdate in references (migration limitation)
@@ -76,7 +76,7 @@ export const session = sqliteTable('session', {
     userAgent: text('user_agent'),
     userId: text('user_id')
         .notNull()
-        .references(user, user._.columns.id),
+        .references(() => user.id),
     impersonatedBy: text('impersonated_by'),
 })
 
@@ -86,7 +86,7 @@ export const account = sqliteTable('account', {
     providerId: text('provider_id').notNull(),
     userId: text('user_id')
         .notNull()
-        .references(user, user._.columns.id),
+        .references(() => user.id),
     accessToken: text('access_token'),
     refreshToken: text('refresh_token'),
     idToken: text('id_token'),
@@ -123,10 +123,10 @@ export const article = sqliteTable('article', {
 })
 
 export const userToArticle = sqliteTable('user_to_article', {
-    userId: text('user_id').references(user, user._.columns.id),
+    userId: text('user_id').references(() => user.id),
     articleId: text('article_id')
         .notNull()
-        .references(article, article._.columns.id),
+        .references(() => article.id),
     isCreator: integer('is_creator', { mode: 'boolean' })
         .notNull()
         .default(false)
@@ -162,7 +162,7 @@ export const issue = sqliteTable('issue', {
     deadlineDate: integer('deadline_date', { mode: 'timestamp' })
         .$defaultFn(() => new Date())
         .notNull(),
-    volumeId: integer('volume_id').references(volume, volume._.columns.id),
+    volumeId: integer('volume_id').references(() => volume.id),
     issueNumber: integer('issue_number'),
     createdAt: integer('created_at', { mode: 'timestamp' })
         .$defaultFn(() => new Date())
@@ -191,7 +191,7 @@ export const paper = sqliteTable('paper', {
         .notNull(),
     reviewedDate: integer('reviewed_date', { mode: 'timestamp' }).$defaultFn(() => new Date()),
     publishedDate: integer('published_date', { mode: 'timestamp' }).$defaultFn(() => new Date()),
-    issueId: integer('issue_id').references(issue, issue._.columns.id),
+    issueId: integer('issue_id').references(() => issue.id),
     createdAt: integer('created_at', { mode: 'timestamp' })
         .$defaultFn(() => new Date())
         .notNull(),
@@ -201,14 +201,14 @@ export const paper = sqliteTable('paper', {
 })
 
 export const userToPaper = sqliteTable('user_to_paper', {
-    userId: text('user_id').references(user, user._.columns.id),
+    userId: text('user_id').references(() => user.id),
     initiatingAuthor: integer('initiating_author', { mode: 'boolean' })
         .notNull()
         .default(false)
         .$defaultFn(() => false),
     paperId: integer('paper_id')
         .notNull()
-        .references(paper, paper._.columns.id),
+        .references(() => paper.id),
 })
 
 // ─── Relations ──────────────────────────────────────────────────────────────

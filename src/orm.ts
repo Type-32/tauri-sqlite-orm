@@ -90,22 +90,23 @@ export class SQLiteColumn<
         return new SQLiteColumn(this._.name, this.type, { ...this.options, unique: true, mode: this._.mode })
     }
 
-    references<T extends AnyTable, K extends keyof T['_']['columns'] & string>(
-        ref: T,
-        column: K | T['_']['columns'][K],
+    /** Lazy reference (Drizzle-style) - use getter to allow self-refs and forward refs */
+    references(
+        getRef: () => AnySQLiteColumn,
         options?: { onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'; onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action' }
     ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
-        const columnKey = typeof column === 'string' ? column : (column as any)._.name as K
-        const columnObj = typeof column === 'string' ? ref._.columns[column] : column as any
-
         return new SQLiteColumn(
             this._.name,
             this.type,
             {
                 ...this.options,
                 references: {
-                    table: ref,
-                    column: columnObj,
+                    getRef: () => {
+                        const column = getRef()
+                        const table = (column as any).__table
+                        if (!table) throw new Error(`Column ${(column as any)._?.name} has no __table - ensure it belongs to a table created with sqliteTable()`)
+                        return { table, column }
+                    },
                     onDelete: options?.onDelete,
                     onUpdate: options?.onUpdate,
                 },
@@ -192,7 +193,19 @@ export const sqliteTable = <TTableName extends string, TColumns extends Record<s
     tableName: TTableName,
     columns: TColumns
 ): Table<TColumns, TTableName> => {
-    return new Table(tableName, columns)
+    const table = new Table(tableName, columns)
+    // Attach table to columns so references(() => table.column) can resolve table name
+    for (const col of Object.values(columns)) {
+        (col as any).__table = table
+    }
+    // Expose columns as table.id, table.columnName (Drizzle-style) for references(() => paper.id)
+    for (const key of Object.keys(columns)) {
+        Object.defineProperty(table, key, {
+            get: () => table._.columns[key as keyof TColumns],
+            enumerable: true,
+        })
+    }
+    return table
 }
 
 // Kysely-based type aliases — kept for API surface compatibility
@@ -241,13 +254,11 @@ export class TauriORM {
             sql += ` DEFAULT ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`
         }
         if (col.options.references) {
-            sql += ` REFERENCES ${col.options.references.table._.name}(${col.options.references.column._.name})`
-            if (col.options.references.onDelete) {
-                sql += ` ON DELETE ${col.options.references.onDelete.toUpperCase()}`
-            }
-            if (col.options.references.onUpdate) {
-                sql += ` ON UPDATE ${col.options.references.onUpdate.toUpperCase()}`
-            }
+            const ref = 'getRef' in col.options.references ? col.options.references.getRef() : col.options.references
+            sql += ` REFERENCES ${ref.table._.name}(${ref.column._.name})`
+            const opts = col.options.references
+            if (opts.onDelete) sql += ` ON DELETE ${opts.onDelete.toUpperCase()}`
+            if (opts.onUpdate) sql += ` ON UPDATE ${opts.onUpdate.toUpperCase()}`
         }
         return sql
     }

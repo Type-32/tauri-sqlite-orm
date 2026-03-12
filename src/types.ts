@@ -38,12 +38,18 @@ export interface ColumnOptions<TData, TEnum extends readonly string[] = readonly
     primaryKey?: boolean
     autoincrement?: boolean
     unique?: boolean
-    references?: {
-        table: AnyTable
-        column: AnySQLiteColumn
-        onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'
-        onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'
-    }
+    references?:
+        | {
+              table: AnyTable
+              column: AnySQLiteColumn
+              onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'
+              onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'
+          }
+        | {
+              getRef: () => { table: AnyTable; column: AnySQLiteColumn }
+              onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'
+              onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'
+          }
     mode?: Mode
     $onUpdateFn?: () => TData
     enum?: TEnum

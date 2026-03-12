@@ -47,7 +47,7 @@ const posts = sqliteTable('posts', {
   id: integer('id').primaryKey().autoincrement(),
   title: text('title').notNull(),
   content: text('content').notNull(),
-  userId: integer('user_id').notNull().references(users, users._.columns.id, { onDelete: 'cascade' }),
+  userId: integer('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
 })
 
 // Define relations
