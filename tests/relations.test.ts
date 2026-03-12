@@ -1,9 +1,8 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
-import { eq, inArray, exists } from '../src/index'
+import { eq, inArray, exists, sqliteTable, integer, text, relations, TauriORM } from '../src/index'
 import { subquery } from '../src/subquery'
 import { MockDatabase, removeDb } from './helpers/mock-db'
 import { createOrm, users, posts, tags, postTags } from './helpers/schema'
-import type { TauriORM } from '../src/index'
 
 const DB_PATH = 'relations-test.db'
 
@@ -252,6 +251,54 @@ describe('Subquery operators', () => {
 })
 
 // ─── Manual JOINs ────────────────────────────────────────────────────────────
+
+describe('Self-reference include (quotingMessage)', () => {
+    const DB_SELF = 'relations-self-ref.db'
+    let ormSelf: TauriORM
+    let dbSelf: MockDatabase
+
+    const messages = sqliteTable('_msg', {
+        id: integer('id').primaryKey().autoincrement(),
+        text: text('text').notNull(),
+        quotingMessageId: integer('quoting_message_id').references(() => messages._.columns.id),
+    })
+    const messagesRelations = relations(messages, ({ one }) => ({
+        quotingMessage: one(messages, {
+            fields: [messages._.columns.quotingMessageId],
+            references: [messages._.columns.id],
+        }),
+    }))
+    const schemaSelf = { _msg: messages, _msgRelations: messagesRelations }
+
+    beforeAll(async () => {
+        removeDb(DB_SELF)
+        dbSelf = MockDatabase.open(DB_SELF)
+        ormSelf = new TauriORM(dbSelf, schemaSelf)
+        await ormSelf.migrate()
+        await ormSelf.insert(messages).values({ text: 'First' }).execute()
+        const m2 = await ormSelf.insert(messages).values({ text: 'Reply', quotingMessageId: 1 }).returningFirst()
+        expect(m2?.quotingMessageId).toBe(1)
+    })
+
+    afterAll(() => {
+        dbSelf.close()
+        removeDb(DB_SELF)
+    })
+
+    test('include quotingMessage with where/orderBy avoids ambiguous column', async () => {
+        // Previously: "ambiguous column name: conversation_id" when including self-ref + other relations.
+        // Fix: wrap base in subquery when self-ref is included so WHERE/ORDER BY run in single-table context.
+        const rows = await ormSelf
+            .select(messages)
+            .where(eq(messages._.columns.id, 2))
+            .orderBy(messages._.columns.id, 'asc')
+            .include({ quotingMessage: true })
+            .all()
+        expect(rows).toHaveLength(1)
+        expect(rows[0].text).toBe('Reply')
+        // Query runs without "ambiguous column name" error (fix: subquery when self-ref included)
+    })
+})
 
 describe('Manual leftJoin()', () => {
     test('joins users with their posts manually', async () => {

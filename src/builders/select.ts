@@ -12,12 +12,13 @@ function getDbNameToTsName(table: AnyTable): Record<string, string> {
     return map
 }
 
-/** Normalize result key - SQLite may return quoted aliases like "users.id" */
+/** Normalize result key - SQLite may return quoted aliases like "users.id" or """users.id""" */
 function normalizeRowKey(key: string): string {
-    if (key.startsWith('"') && key.endsWith('"')) {
-        return key.slice(1, -1)
+    let k = key
+    while (k.length >= 2 && k[0] === '"' && k[k.length - 1] === '"') {
+        k = k.slice(1, -1)
     }
-    return key
+    return k
 }
 
 /** Resolve which columns to select for a relation. Always includes primary keys for deduplication. */
@@ -167,7 +168,54 @@ export class SelectQueryBuilder<
         return this
     }
 
+    private hasSelfReferenceInIncludes(
+        table: AnyTable,
+        relations: Record<string, NestedInclude>,
+        depth: number = 0
+    ): boolean {
+        if (depth > 10) return false
+        for (const [relName, include] of Object.entries(relations)) {
+            if (!include) continue
+            const rel = table.relations[relName]
+            if (!rel) continue
+            if (rel.foreignTable === table) return true
+            if (typeof include === 'object' && include.with) {
+                if (this.hasSelfReferenceInIncludes(rel.foreignTable, include.with, depth + 1))
+                    return true
+            }
+        }
+        return false
+    }
+
     private applyIncludes(): void {
+        const hasIncludes = Object.values(this._includeRelations).some((i) => i)
+        const baseTableName = this._table._.name
+        const needsSubquery =
+            hasIncludes && this.hasSelfReferenceInIncludes(this._table, this._includeRelations as any)
+
+        // Only wrap in subquery when self-reference is included (avoids ambiguous column names).
+        // Re-select with simple aliases so _base.id works; then re-alias to "table.col" for processRelationResults.
+        if (needsSubquery) {
+            const selected = this._columns
+                ? this._columns.map((c) => this._table._.columns[c as string])
+                : Object.values(this._table._.columns)
+            const baseAliases = selected.map(
+                (col) => `${this._table._.name}.${col._.name}`
+            )
+            const subSelect = selected.map((c) =>
+                sql.ref(`${this._table._.name}.${c._.name}`).as(c._.name)
+            )
+            const subquery = this._builder.clearSelect().select(subSelect as any)
+            this._builder = this.kysely.selectFrom(subquery.as('_base'))
+            for (let i = 0; i < selected.length; i++) {
+                const col = selected[i]
+                const outAlias = baseAliases[i]
+                this._builder = this._builder.select(
+                    sql.ref(`_base.${col._.name}`).as(outAlias)
+                )
+            }
+        }
+
         const processRelations = (
             parentTable: AnyTable,
             parentAlias: string,
@@ -199,9 +247,13 @@ export class SelectQueryBuilder<
                 )
 
                 if (relation.type === 'one' && relation.fields && relation.references) {
+                    const parentRef = (alias: string, colName: string) =>
+                        alias === '_base'
+                            ? sql.ref(`_base.${colName}`)
+                            : sql.ref(`${alias}.${colName}`)
                     const onCondition = sql<SqlBool>`${sql.join(
                         relation.fields.map((field, i) =>
-                            sql`${sql.ref(`${parentAlias}.${field._.name}`)} = ${sql.ref(`${foreignAlias}.${relation.references![i]._.name}`)}`
+                            sql`${parentRef(parentAlias, field._.name)} = ${sql.ref(`${foreignAlias}.${relation.references![i]._.name}`)}`
                         ),
                         sql` AND `
                     )}`
@@ -218,7 +270,11 @@ export class SelectQueryBuilder<
                         const junctionAlias = `${foreignAlias}_jn`
                         const fromJ = relation.fromJunction
                         const toJ = relation.toJunction
-                        const join1 = sql<SqlBool>`${sql.ref(`${parentAlias}.${fromJ.column._.name}`)} = ${sql.ref(`${junctionAlias}.${fromJ.junctionColumn._.name}`)}`
+                        const parentRef = (alias: string, colName: string) =>
+                            alias === '_base'
+                                ? sql.ref(`_base.${colName}`)
+                                : sql.ref(`${alias}.${colName}`)
+                        const join1 = sql<SqlBool>`${parentRef(parentAlias, fromJ.column._.name)} = ${sql.ref(`${junctionAlias}.${fromJ.junctionColumn._.name}`)}`
                         let join2: Expression<SqlBool> = sql<SqlBool>`${sql.ref(`${junctionAlias}.${toJ.junctionColumn._.name}`)} = ${sql.ref(`${foreignAlias}.${toJ.column._.name}`)}`
                         if (relation.where) {
                             join2 = and(join2, relation.where(foreignAlias) as Condition)
@@ -248,9 +304,13 @@ export class SelectQueryBuilder<
                             }
                         }
                         if (fields && references) {
+                            const parentRef = (alias: string, colName: string) =>
+                                alias === '_base'
+                                    ? sql.ref(`_base.${colName}`)
+                                    : sql.ref(`${alias}.${colName}`)
                             let onCondition: Expression<SqlBool> = sql<SqlBool>`${sql.join(
                                 fields.map((field, i) =>
-                                    sql`${sql.ref(`${foreignAlias}.${field._.name}`)} = ${sql.ref(`${parentAlias}.${references![i]._.name}`)}`
+                                    sql`${sql.ref(`${foreignAlias}.${field._.name}`)} = ${parentRef(parentAlias, references![i]._.name)}`
                                 ),
                                 sql` AND `
                             )}`
@@ -273,7 +333,8 @@ export class SelectQueryBuilder<
             }
         }
 
-        processRelations(this._table, this._table._.name, this._includeRelations as any, 0)
+        const rootAlias = needsSubquery ? '_base' : baseTableName
+        processRelations(this._table, rootAlias, this._includeRelations as any, 0)
     }
 
     async execute(): Promise<InferSelectModel<TTable>[]> {
