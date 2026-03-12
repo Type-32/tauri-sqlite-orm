@@ -1,165 +1,123 @@
-import {SQLCondition, SQLSubquery} from "./orm";
-import {AnySQLiteColumn} from "./types";
+import { Expression, isExpression, sql, SqlBool } from 'kysely'
+import { AnySQLiteColumn } from './types'
+import { serializeValue } from './serialization'
 
-export const eq = <T>(column: AnySQLiteColumn, value: T, tableAlias?: string): SQLCondition => {
-    const columnName = tableAlias ? `${tableAlias}.${column._.name}` : column._.name;
-    return {
-        sql: `${columnName} = ?`,
-        params: [value],
-    };
-};
-export const ne = <T>(column: AnySQLiteColumn, value: T, tableAlias?: string): SQLCondition => {
-    const columnName = tableAlias ? `${tableAlias}.${column._.name}` : column._.name;
-    return {
-        sql: `${columnName} != ?`,
-        params: [value],
-    };
-};
-export const and = (...conditions: SQLCondition[]): SQLCondition => ({
-    sql: conditions.map((c) => `(${c.sql})`).join(" AND "),
-    params: conditions.flatMap((c) => c.params),
-});
-export const or = (...conditions: SQLCondition[]): SQLCondition => ({
-    sql: conditions.map((c) => `(${c.sql})`).join(" OR "),
-    params: conditions.flatMap((c) => c.params),
-});
-export const not = (condition: SQLCondition): SQLCondition => ({
-    sql: `NOT (${condition.sql})`,
-    params: condition.params,
-});
-export const gt = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
-    sql: `${column._.name} > ?`,
-    params: [value],
-});
-export const gte = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
-    sql: `${column._.name} >= ?`,
-    params: [value],
-});
-export const lt = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
-    sql: `${column._.name} < ?`,
-    params: [value],
-});
-export const lte = <T>(column: AnySQLiteColumn, value: T): SQLCondition => ({
-    sql: `${column._.name} <= ?`,
-    params: [value],
-});
-export const like = (
-    column: AnySQLiteColumn,
-    pattern: string
-): SQLCondition => ({
-    sql: `${column._.name} LIKE ?`,
-    params: [pattern],
-});
-export const ilike = (
-    column: AnySQLiteColumn,
-    pattern: string
-): SQLCondition => ({
-    sql: `${column._.name} LIKE ? COLLATE NOCASE`,
-    params: [pattern],
-});
-export const startsWith = (
-    column: AnySQLiteColumn,
-    value: string
-): SQLCondition => ({
-    sql: `${column._.name} LIKE ?`,
-    params: [`${value}%`],
-});
-export const endsWith = (
-    column: AnySQLiteColumn,
-    value: string
-): SQLCondition => ({
-    sql: `${column._.name} LIKE ?`,
-    params: [`%${value}`],
-});
-export const contains = (
-    column: AnySQLiteColumn,
-    value: string
-): SQLCondition => ({
-    sql: `${column._.name} LIKE ?`,
-    params: [`%${value}%`],
-});
-export const isNull = (column: AnySQLiteColumn): SQLCondition => ({
-    sql: `${column._.name} IS NULL`,
-    params: [],
-});
-export const isNotNull = (column: AnySQLiteColumn): SQLCondition => ({
-    sql: `${column._.name} IS NOT NULL`,
-    params: [],
-});
-export const exists = (subquery: { sql: string; params: any[] }): SQLCondition => ({
-    sql: `EXISTS (${subquery.sql})`,
-    params: subquery.params,
-});
-export const notExists = (subquery: { sql: string; params: any[] }): SQLCondition => ({
-    sql: `NOT EXISTS (${subquery.sql})`,
-    params: subquery.params,
-});
+export type Condition = Expression<SqlBool>
 
-// Comparison operators that work with subqueries or values
-export const eqSubquery = (column: AnySQLiteColumn, subquery: SQLSubquery): SQLCondition => ({
-    sql: `${column._.name} = ${subquery.sql}`,
-    params: subquery.params,
-});
+export const eq = <T>(column: AnySQLiteColumn, value: T, tableAlias?: string): Condition => {
+    const colRef = tableAlias ? `${tableAlias}.${column._.name}` : column._.name
+    const serialized = serializeValue(value, column)
+    return sql<SqlBool>`${sql.ref(colRef)} = ${sql.val(serialized)}`
+}
 
-export const neSubquery = (column: AnySQLiteColumn, subquery: SQLSubquery): SQLCondition => ({
-    sql: `${column._.name} != ${subquery.sql}`,
-    params: subquery.params,
-});
+export const ne = <T>(column: AnySQLiteColumn, value: T, tableAlias?: string): Condition => {
+    const colRef = tableAlias ? `${tableAlias}.${column._.name}` : column._.name
+    const serialized = serializeValue(value, column)
+    return sql<SqlBool>`${sql.ref(colRef)} != ${sql.val(serialized)}`
+}
 
-export const gtSubquery = (column: AnySQLiteColumn, subquery: SQLSubquery): SQLCondition => ({
-    sql: `${column._.name} > ${subquery.sql}`,
-    params: subquery.params,
-});
+export const and = (...conditions: Condition[]): Condition => {
+    if (conditions.length === 0) return sql<SqlBool>`1 = 1`
+    if (conditions.length === 1) return conditions[0]
+    return sql<SqlBool>`(${sql.join(conditions.map(c => sql`(${c})`), sql` AND `)})`
+}
 
-export const gteSubquery = (column: AnySQLiteColumn, subquery: SQLSubquery): SQLCondition => ({
-    sql: `${column._.name} >= ${subquery.sql}`,
-    params: subquery.params,
-});
+export const or = (...conditions: Condition[]): Condition => {
+    if (conditions.length === 0) return sql<SqlBool>`1 = 1`
+    if (conditions.length === 1) return conditions[0]
+    return sql<SqlBool>`(${sql.join(conditions.map(c => sql`(${c})`), sql` OR `)})`
+}
 
-export const ltSubquery = (column: AnySQLiteColumn, subquery: SQLSubquery): SQLCondition => ({
-    sql: `${column._.name} < ${subquery.sql}`,
-    params: subquery.params,
-});
+export const not = (condition: Condition): Condition =>
+    sql<SqlBool>`NOT (${condition})`
 
-export const lteSubquery = (column: AnySQLiteColumn, subquery: SQLSubquery): SQLCondition => ({
-    sql: `${column._.name} <= ${subquery.sql}`,
-    params: subquery.params,
-});
-export const inArray = <T>(
-    column: AnySQLiteColumn,
-    values: T[] | SQLSubquery
-): SQLCondition => {
-    if ('_isSubquery' in values && values._isSubquery) {
-        return {
-            sql: `${column._.name} IN ${values.sql}`,
-            params: values.params,
-        };
+export const gt = <T>(column: AnySQLiteColumn, value: T): Condition => {
+    const serialized = serializeValue(value, column)
+    return sql<SqlBool>`${sql.ref(column._.name)} > ${sql.val(serialized)}`
+}
+
+export const gte = <T>(column: AnySQLiteColumn, value: T): Condition => {
+    const serialized = serializeValue(value, column)
+    return sql<SqlBool>`${sql.ref(column._.name)} >= ${sql.val(serialized)}`
+}
+
+export const lt = <T>(column: AnySQLiteColumn, value: T): Condition => {
+    const serialized = serializeValue(value, column)
+    return sql<SqlBool>`${sql.ref(column._.name)} < ${sql.val(serialized)}`
+}
+
+export const lte = <T>(column: AnySQLiteColumn, value: T): Condition => {
+    const serialized = serializeValue(value, column)
+    return sql<SqlBool>`${sql.ref(column._.name)} <= ${sql.val(serialized)}`
+}
+
+export const like = (column: AnySQLiteColumn, pattern: string): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} LIKE ${sql.val(pattern)}`
+
+export const ilike = (column: AnySQLiteColumn, pattern: string): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} LIKE ${sql.val(pattern)} COLLATE NOCASE`
+
+export const startsWith = (column: AnySQLiteColumn, value: string): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} LIKE ${sql.val(`${value}%`)}`
+
+export const endsWith = (column: AnySQLiteColumn, value: string): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} LIKE ${sql.val(`%${value}`)}`
+
+export const contains = (column: AnySQLiteColumn, value: string): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} LIKE ${sql.val(`%${value}%`)}`
+
+export const isNull = (column: AnySQLiteColumn): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} IS NULL`
+
+export const isNotNull = (column: AnySQLiteColumn): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} IS NOT NULL`
+
+export const exists = (subquery: Expression<any>): Condition =>
+    sql<SqlBool>`EXISTS (${subquery})`
+
+export const notExists = (subquery: Expression<any>): Condition =>
+    sql<SqlBool>`NOT EXISTS (${subquery})`
+
+export const eqSubquery = (column: AnySQLiteColumn, subquery: Expression<any>): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} = (${subquery})`
+
+export const neSubquery = (column: AnySQLiteColumn, subquery: Expression<any>): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} != (${subquery})`
+
+export const gtSubquery = (column: AnySQLiteColumn, subquery: Expression<any>): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} > (${subquery})`
+
+export const gteSubquery = (column: AnySQLiteColumn, subquery: Expression<any>): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} >= (${subquery})`
+
+export const ltSubquery = (column: AnySQLiteColumn, subquery: Expression<any>): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} < (${subquery})`
+
+export const lteSubquery = (column: AnySQLiteColumn, subquery: Expression<any>): Condition =>
+    sql<SqlBool>`${sql.ref(column._.name)} <= (${subquery})`
+
+export const inArray = <T>(column: AnySQLiteColumn, values: T[] | Expression<any>): Condition => {
+    if (isExpression(values)) {
+        return sql<SqlBool>`${sql.ref(column._.name)} IN (${values as Expression<any>})`
     }
-    return {
-        sql: `${column._.name} IN (${(values as T[]).map(() => "?").join(",")})`,
-        params: values as T[],
-    };
-};
-export const notIn = <T>(
-    column: AnySQLiteColumn,
-    values: T[] | SQLSubquery
-): SQLCondition => {
-    if ('_isSubquery' in values && values._isSubquery) {
-        return {
-            sql: `${column._.name} NOT IN ${values.sql}`,
-            params: values.params,
-        };
+    const arr = values as T[]
+    if (arr.length === 0) return sql<SqlBool>`1 = 0`
+    const serialized = arr.map(v => sql.val(serializeValue(v, column)))
+    return sql<SqlBool>`${sql.ref(column._.name)} IN (${sql.join(serialized)})`
+}
+
+export const notIn = <T>(column: AnySQLiteColumn, values: T[] | Expression<any>): Condition => {
+    if (isExpression(values)) {
+        return sql<SqlBool>`${sql.ref(column._.name)} NOT IN (${values as Expression<any>})`
     }
-    return {
-        sql: `${column._.name} NOT IN (${(values as T[]).map(() => "?").join(",")})`,
-        params: values as T[],
-    };
-};
-export const between = <T>(
-    column: AnySQLiteColumn,
-    min: T,
-    max: T
-): SQLCondition => ({
-    sql: `${column._.name} BETWEEN ? AND ?`,
-    params: [min, max],
-});
+    const arr = values as T[]
+    if (arr.length === 0) return sql<SqlBool>`1 = 1`
+    const serialized = arr.map(v => sql.val(serializeValue(v, column)))
+    return sql<SqlBool>`${sql.ref(column._.name)} NOT IN (${sql.join(serialized)})`
+}
+
+export const between = <T>(column: AnySQLiteColumn, min: T, max: T): Condition => {
+    const serializedMin = serializeValue(min, column)
+    const serializedMax = serializeValue(max, column)
+    return sql<SqlBool>`${sql.ref(column._.name)} BETWEEN ${sql.val(serializedMin)} AND ${sql.val(serializedMax)}`
+}

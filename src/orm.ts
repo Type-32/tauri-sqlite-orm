@@ -1,4 +1,5 @@
 import Database from '@tauri-apps/plugin-sql'
+import { Expression, Kysely, sql as kyselySql, SqlBool } from 'kysely'
 import {
     SelectQueryBuilder,
     InsertQueryBuilder,
@@ -17,6 +18,7 @@ import {
     Mode,
     RelationConfig,
 } from './types'
+import { TauriDialect } from './dialect'
 
 // Column class
 export class SQLiteColumn<
@@ -192,74 +194,30 @@ export const sqliteTable = <TTableName extends string, TColumns extends Record<s
     return new Table(tableName, columns)
 }
 
-// Query Helpers
-export type SQLCondition = {
-    sql: string
-    params: any[]
-}
+// Kysely-based type aliases — kept for API surface compatibility
+export type SQLCondition = Expression<SqlBool>
+export type SQLAggregate<T = number> = Expression<T>
+export type SQLSubquery = Expression<any>
 
-// Aggregate type for use in SELECT clauses
-export type SQLAggregate<T = number> = {
-    sql: string
-    params: any[]
-    _type?: T // phantom type for type inference
-}
+export const asc = (column: AnySQLiteColumn): Expression<any> =>
+    kyselySql`${kyselySql.ref(column._.name)} ASC`
 
-// Subquery type
-export type SQLSubquery = {
-    sql: string
-    params: any[]
-    _isSubquery: true
-}
-
-export const asc = (column: AnySQLiteColumn) => ({
-    sql: `${column._.name} ASC`,
-    params: [],
-})
-
-export const desc = (column: AnySQLiteColumn) => ({
-    sql: `${column._.name} DESC`,
-    params: [],
-})
-
-// SQL template tag
-export const sql = <T = unknown>(
-    strings: TemplateStringsArray,
-    ...values: any[]
-): { sql: string; params: any[]; mapWith?: (value: any) => T } => {
-    const queryParts: string[] = []
-    const params: any[] = []
-
-    strings.forEach((str, i) => {
-        queryParts.push(str)
-        if (values[i] !== undefined) {
-            if (typeof values[i] === 'object' && values[i].sql) {
-                queryParts.push(values[i].sql)
-                params.push(...values[i].params)
-            } else {
-                queryParts.push('?')
-                params.push(values[i])
-            }
-        }
-    })
-
-    return {
-        sql: queryParts.join(''),
-        params,
-    }
-}
+export const desc = (column: AnySQLiteColumn): Expression<any> =>
+    kyselySql`${kyselySql.ref(column._.name)} DESC`
 
 // Main ORM Class
 export class TauriORM {
     private tables: Map<string, AnyTable> = new Map()
+    private kysely: Kysely<any>
 
     constructor(
         private db: Database,
         schema: Record<string, AnyTable | Record<string, Relation>> | undefined = undefined
     ) {
+        this.kysely = new Kysely({ dialect: new TauriDialect(db) })
+
         if (schema) {
-            // First pass: register all tables
-            for (const [key, value] of Object.entries(schema)) {
+            for (const [, value] of Object.entries(schema)) {
                 if (value instanceof Table) {
                     this.tables.set(value._.name, value)
                 }
@@ -596,21 +554,21 @@ export class TauriORM {
             console.warn(
                 `[Tauri-ORM] Table "${table._.name}" was not passed in the schema to the ORM constructor. Relations will not be available.`
             )
-            return new SelectQueryBuilder(this.db, table, columns)
+            return new SelectQueryBuilder(this.kysely, table, columns)
         }
-        return new SelectQueryBuilder(this.db, internalTable as T, columns)
+        return new SelectQueryBuilder(this.kysely, internalTable as T, columns)
     }
 
     insert<T extends AnyTable>(table: T): InsertQueryBuilder<T> {
-        return new InsertQueryBuilder(this.db, table)
+        return new InsertQueryBuilder(this.kysely, table)
     }
 
     update<T extends AnyTable>(table: T): UpdateQueryBuilder<T> {
-        return new UpdateQueryBuilder(this.db, table)
+        return new UpdateQueryBuilder(this.kysely, table)
     }
 
     delete<T extends AnyTable>(table: T): DeleteQueryBuilder<T> {
-        return new DeleteQueryBuilder(this.db, table)
+        return new DeleteQueryBuilder(this.kysely, table)
     }
 
     async upsert<T extends AnyTable>(
@@ -630,11 +588,11 @@ export class TauriORM {
     }
 
     $with(alias: string): {
-        as: (query: { sql: string; params: any[] }) => WithQueryBuilder
+        as: (query: SelectQueryBuilder<any, any>) => WithQueryBuilder
     } {
-        const withBuilder = new WithQueryBuilder(this.db)
+        const withBuilder = new WithQueryBuilder(this.kysely)
         return {
-            as: (query: { sql: string; params: any[] }) => {
+            as: (query: SelectQueryBuilder<any, any>) => {
                 withBuilder.with(alias, query)
                 return withBuilder
             },
@@ -642,15 +600,9 @@ export class TauriORM {
     }
 
     async transaction<T>(callback: (tx: TauriORM) => Promise<T>): Promise<T> {
-        await this.db.execute('BEGIN TRANSACTION')
-        try {
-            const result = await callback(this)
-            await this.db.execute('COMMIT')
-            return result
-        } catch (error) {
-            await this.db.execute('ROLLBACK')
-            throw error
-        }
+        return this.kysely.transaction().execute(async () => {
+            return callback(this)
+        })
     }
 
     rollback(): never {

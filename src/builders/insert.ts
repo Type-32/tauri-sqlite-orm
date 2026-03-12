@@ -1,241 +1,161 @@
-import {BaseQueryBuilder} from "./query-base";
-import Database from "@tauri-apps/plugin-sql";
-import {InferInsertModel} from "../orm";
-import {AnySQLiteColumn, AnyTable, InferSelectModel} from "../types";
-import {InsertValidationError, ColumnNotFoundError} from "../errors";
-import {serializeValue} from "../serialization";
+import { Kysely } from 'kysely'
+import { InferInsertModel } from '../orm'
+import { AnySQLiteColumn, AnyTable, InferSelectModel } from '../types'
+import { InsertValidationError } from '../errors'
+import { serializeValue } from '../serialization'
 
-export class InsertQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
-    private dataSets: InferInsertModel<T>[] = [];
-    private returningColumns: (keyof T["_"]["columns"])[] = [];
-    private onConflictAction: "nothing" | "update" | null = null;
-    private conflictTarget: AnySQLiteColumn[] = [];
-    private updateSet: Partial<InferInsertModel<T>> = {};
+export class InsertQueryBuilder<T extends AnyTable> {
+    private _builder: any
+    private _table: T
+    private _dataSets: InferInsertModel<T>[] = []
+    private _returningColumns: (keyof T['_']['columns'])[] = []
+    private _onConflictAction: 'nothing' | 'update' | null = null
+    private _conflictTarget: AnySQLiteColumn[] = []
+    private _updateSet: Partial<InferInsertModel<T>> = {}
 
-    constructor(db: Database, private table: T) {
-        super(db);
-        this.query = `INSERT INTO ${table._.name}`;
+    constructor(private readonly kysely: Kysely<any>, table: T) {
+        this._table = table
+        this._builder = kysely.insertInto(table._.name)
     }
 
     values(data: InferInsertModel<T> | InferInsertModel<T>[]): this {
-        const dataArray = Array.isArray(data) ? data : [data];
-        this.dataSets.push(...dataArray);
-        return this;
+        const arr = Array.isArray(data) ? data : [data]
+        this._dataSets.push(...arr)
+        return this
     }
 
-    returning(...columns: (keyof T["_"]["columns"])[]): this {
-        this.returningColumns.push(...columns);
-        return this;
+    returning(...columns: (keyof T['_']['columns'])[]): this {
+        this._returningColumns.push(...columns)
+        return this
     }
 
     onConflictDoNothing(target?: AnySQLiteColumn | AnySQLiteColumn[]): this {
-        this.onConflictAction = "nothing";
+        this._onConflictAction = 'nothing'
         if (target) {
-            this.conflictTarget = Array.isArray(target) ? target : [target];
+            this._conflictTarget = Array.isArray(target) ? target : [target]
         }
-        return this;
+        return this
     }
 
     onConflictDoUpdate(config: {
-        target: AnySQLiteColumn | AnySQLiteColumn[];
-        set: Partial<InferInsertModel<T>>;
+        target: AnySQLiteColumn | AnySQLiteColumn[]
+        set: Partial<InferInsertModel<T>>
     }): this {
-        this.onConflictAction = "update";
-        this.conflictTarget = Array.isArray(config.target)
-            ? config.target
-            : [config.target];
-        this.updateSet = config.set;
-        return this;
+        this._onConflictAction = 'update'
+        this._conflictTarget = Array.isArray(config.target) ? config.target : [config.target]
+        this._updateSet = config.set
+        return this
     }
 
-    private processDefaultValues(
-        data: InferInsertModel<T>
-    ): Partial<InferInsertModel<T>> {
-        const finalData: Partial<InferInsertModel<T>> = {...data};
-
-        for (const [key, column] of Object.entries(this.table._.columns)) {
-            const typedKey = key as keyof T["_"]["columns"];
-
-            if ((finalData as any)[typedKey] === undefined) {
-                if (column.options.$defaultFn) {
-                    (finalData as any)[typedKey] = column.options.$defaultFn();
-                }
+    private processDefaults(data: InferInsertModel<T>): Partial<InferInsertModel<T>> {
+        const out: Partial<InferInsertModel<T>> = { ...data }
+        for (const [key, column] of Object.entries(this._table._.columns)) {
+            if ((out as any)[key] === undefined && column.options.$defaultFn) {
+                ;(out as any)[key] = column.options.$defaultFn()
             }
         }
-
-        return finalData;
+        return out
     }
 
-    private buildConflictClause(): string {
-        if (!this.onConflictAction) return "";
-
-        let clause = " ON CONFLICT";
-
-        if (this.conflictTarget.length > 0) {
-            const targetNames = this.conflictTarget
-                .map((col) => col._.name)
-                .join(", ");
-            clause += ` (${targetNames})`;
+    private serializeDataSet(data: Partial<InferInsertModel<T>>): Record<string, any> {
+        const out: Record<string, any> = {}
+        for (const [key, value] of Object.entries(data)) {
+            const column = this._table._.columns[key]
+            out[column ? column._.name : key] = column ? serializeValue(value, column) : value
         }
-
-        if (this.onConflictAction === "nothing") {
-            clause += " DO NOTHING";
-        } else if (this.onConflictAction === "update") {
-            const setEntries = Object.entries(this.updateSet);
-            if (setEntries.length > 0) {
-                const setClause = setEntries.map(([key]) => `${key} = ?`).join(", ");
-                clause += ` DO UPDATE SET ${setClause}`;
-            }
-        }
-
-        return clause;
+        return out
     }
 
     async execute(): Promise<
         T extends AnyTable ? (InferSelectModel<T> & Record<string, any>)[] : never
     > {
-        if (this.dataSets.length === 0) {
-            throw new InsertValidationError("No data provided for insert. Use .values() to provide data.");
+        if (this._dataSets.length === 0) {
+            throw new InsertValidationError(
+                'No data provided for insert. Use .values() to provide data.'
+            )
         }
 
-        const processedDataSets = this.dataSets.map((data) =>
-            this.processDefaultValues(data)
-        );
+        const processed = this._dataSets.map((d) => this.serializeDataSet(this.processDefaults(d)))
 
-        // Group data by column sets for batch insertion
-        const groups = new Map<string, Partial<InferInsertModel<T>>[]>();
-        for (const dataSet of processedDataSets) {
-            const keys = Object.keys(dataSet).sort().join(",");
-            if (!groups.has(keys)) {
-                groups.set(keys, []);
-            }
-            groups.get(keys)!.push(dataSet);
-        }
+        let builder = this._builder.values(processed.length === 1 ? processed[0] : processed)
 
-        let results: any[] = [];
-        let lastInsertId: number | undefined;
-        let rowsAffected = 0;
-
-        for (const [_, dataSets] of groups) {
-            const columns = Object.keys(dataSets[0]) as (keyof T["_"]["columns"])[];
-            const columnNames = columns.map(
-                (key) => this.table._.columns[key as string]._.name
-            );
-            const placeholders = `(${columns.map(() => "?").join(", ")})`;
-            const valuesSql = dataSets.map(() => placeholders).join(", ");
-            const conflictClause = this.buildConflictClause();
-
-            const finalQuery = `${this.query} (${columnNames.join(
-                ", "
-            )}) VALUES ${valuesSql}${conflictClause}`;
-
-            const params = dataSets.flatMap((data) =>
-                columns.map((col) => {
-                    const value = (data as any)[col] ?? null;
-                    const column = this.table._.columns[col as string];
-                    return column ? serializeValue(value, column) : value;
-                })
-            );
-
-            // Add conflict update params
-            if (this.onConflictAction === "update") {
-                const setValues = Object.entries(this.updateSet).map(
-                    ([key, value]) => {
-                        const column = this.table._.columns[key];
-                        return column ? serializeValue(value, column) : value;
-                    }
-                );
-                params.push(...setValues);
-            }
-
-            if (this.returningColumns.length > 0) {
-                const returningNames = this.returningColumns
-                    .map((col) => this.table._.columns[col as string]._.name)
-                    .join(", ");
-                const queryWithReturning = `${finalQuery} RETURNING ${returningNames}`;
-                const rows = await this.db.select(queryWithReturning, params);
-                results = results.concat(rows);
+        if (this._onConflictAction === 'nothing') {
+            if (this._conflictTarget.length > 0) {
+                const targetCols = this._conflictTarget.map((c) => c._.name)
+                builder = builder.onConflict((oc: any) =>
+                    oc.columns(targetCols).doNothing()
+                )
             } else {
-                const result = await this.db.execute(finalQuery, params);
-                lastInsertId = result.lastInsertId;
-                rowsAffected += result.rowsAffected;
+                builder = builder.onConflict((oc: any) => oc.doNothing())
             }
+        } else if (this._onConflictAction === 'update') {
+            const targetCols = this._conflictTarget.map((c) => c._.name)
+            const updateData = this.serializeDataSet(this._updateSet as any)
+            builder = builder.onConflict((oc: any) =>
+                oc.columns(targetCols).doUpdateSet(updateData)
+            )
         }
 
-        if (this.returningColumns.length > 0) {
-            return results as any;
+        if (this._returningColumns.length > 0) {
+            const cols = this._returningColumns.map(
+                (k) => this._table._.columns[k as string]._.name
+            )
+            const rows = await builder.returning(cols).execute()
+            return rows as any
         }
 
-        return [{lastInsertId, rowsAffected}] as any;
+        const result = await builder.executeTakeFirst()
+        return [
+            {
+                lastInsertId: Number(result?.insertId ?? 0),
+                rowsAffected: Number(result?.numInsertedOrUpdatedRows ?? 0),
+            },
+        ] as any
     }
 
     async returningAll(): Promise<InferSelectModel<T>[]> {
-        const allColumns = Object.keys(
-            this.table._.columns
-        ) as (keyof T["_"]["columns"])[];
-        return this.returning(...allColumns).execute();
+        const allCols = Object.keys(this._table._.columns) as (keyof T['_']['columns'])[]
+        return this.returning(...allCols).execute() as any
     }
 
     async returningFirst(): Promise<InferSelectModel<T> | undefined> {
-        const allColumns = Object.keys(
-            this.table._.columns
-        ) as (keyof T["_"]["columns"])[];
-        const results = await this.returning(...allColumns).execute();
-        return results[0] as InferSelectModel<T> | undefined;
+        const results = await this.returningAll()
+        return results[0]
     }
 
     toSQL(): { sql: string; params: any[] } {
-        if (this.dataSets.length === 0) {
-            throw new InsertValidationError("No data provided for insert. Use .values() to provide data.");
+        if (this._dataSets.length === 0) {
+            throw new InsertValidationError(
+                'No data provided for insert. Use .values() to provide data.'
+            )
+        }
+        const processed = this._dataSets.map((d) => this.serializeDataSet(this.processDefaults(d)))
+        let builder = this._builder.values(processed.length === 1 ? processed[0] : processed)
+
+        if (this._onConflictAction === 'nothing') {
+            if (this._conflictTarget.length > 0) {
+                builder = builder.onConflict((oc: any) =>
+                    oc.columns(this._conflictTarget.map((c) => c._.name)).doNothing()
+                )
+            } else {
+                builder = builder.onConflict((oc: any) => oc.doNothing())
+            }
+        } else if (this._onConflictAction === 'update') {
+            const updateData = this.serializeDataSet(this._updateSet as any)
+            builder = builder.onConflict((oc: any) =>
+                oc
+                    .columns(this._conflictTarget.map((c) => c._.name))
+                    .doUpdateSet(updateData)
+            )
         }
 
-        const processedDataSets = this.dataSets.map((data) =>
-            this.processDefaultValues(data)
-        );
-
-        // Use first dataset to build the query structure
-        const dataSet = processedDataSets[0];
-        const columns = Object.keys(dataSet) as (keyof T["_"]["columns"])[];
-        const columnNames = columns.map(
-            (key) => this.table._.columns[key as string]._.name
-        );
-        const placeholders = `(${columns.map(() => "?").join(", ")})`;
-        const valuesSql = processedDataSets.map(() => placeholders).join(", ");
-        const conflictClause = this.buildConflictClause();
-
-        const finalQuery = `${this.query} (${columnNames.join(
-            ", "
-        )}) VALUES ${valuesSql}${conflictClause}`;
-
-        const params = processedDataSets.flatMap((data) =>
-            columns.map((col) => {
-                const value = (data as any)[col] ?? null;
-                const column = this.table._.columns[col as string];
-                return column ? serializeValue(value, column) : value;
-            })
-        );
-
-        // Add conflict update params
-        if (this.onConflictAction === "update") {
-            const setValues = Object.entries(this.updateSet).map(
-                ([key, value]) => {
-                    const column = this.table._.columns[key];
-                    return column ? serializeValue(value, column) : value;
-                }
-            );
-            params.push(...setValues);
+        if (this._returningColumns.length > 0) {
+            builder = builder.returning(
+                this._returningColumns.map((k) => this._table._.columns[k as string]._.name)
+            )
         }
 
-        if (this.returningColumns.length > 0) {
-            const returningNames = this.returningColumns
-                .map((col) => this.table._.columns[col as string]._.name)
-                .join(", ");
-            return {
-                sql: `${finalQuery} RETURNING ${returningNames}`,
-                params,
-            };
-        }
-
-        return { sql: finalQuery, params };
+        const compiled = builder.compile()
+        return { sql: compiled.sql, params: [...compiled.parameters] }
     }
 }

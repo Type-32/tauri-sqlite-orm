@@ -1,48 +1,26 @@
-import { SQLAggregate } from "./orm";
-import { AnySQLiteColumn } from "./types";
+import { Expression, sql } from 'kysely'
+import { AnySQLiteColumn } from './types'
 
-// Aggregation functions that return SQLAggregate for use in SELECT clauses
-export const count = (column?: AnySQLiteColumn): SQLAggregate<number> => ({
-    sql: `COUNT(${column ? column._.name : "*"})`,
-    params: [],
-});
+export const count = (column?: AnySQLiteColumn): Expression<number> =>
+    sql<number>`COUNT(${column ? sql.ref(column._.name) : sql.raw('*')})`
 
-export const countDistinct = (column: AnySQLiteColumn): SQLAggregate<number> => ({
-    sql: `COUNT(DISTINCT ${column._.name})`,
-    params: [],
-});
+export const countDistinct = (column: AnySQLiteColumn): Expression<number> =>
+    sql<number>`COUNT(DISTINCT ${sql.ref(column._.name)})`
 
-export const sum = (column: AnySQLiteColumn): SQLAggregate<number> => ({
-    sql: `SUM(${column._.name})`,
-    params: [],
-});
+export const sum = (column: AnySQLiteColumn): Expression<number> =>
+    sql<number>`SUM(${sql.ref(column._.name)})`
 
-export const avg = (column: AnySQLiteColumn): SQLAggregate<number> => ({
-    sql: `AVG(${column._.name})`,
-    params: [],
-});
+export const avg = (column: AnySQLiteColumn): Expression<number> =>
+    sql<number>`AVG(${sql.ref(column._.name)})`
 
-export const max = <T = any>(column: AnySQLiteColumn): SQLAggregate<T> => ({
-    sql: `MAX(${column._.name})`,
-    params: [],
-});
+export const max = <T = any>(column: AnySQLiteColumn): Expression<T> =>
+    sql<T>`MAX(${sql.ref(column._.name)})`
 
-export const min = <T = any>(column: AnySQLiteColumn): SQLAggregate<T> => ({
-    sql: `MIN(${column._.name})`,
-    params: [],
-});
+export const min = <T = any>(column: AnySQLiteColumn): Expression<T> =>
+    sql<T>`MIN(${sql.ref(column._.name)})`
 
-export const groupConcat = (
-    column: AnySQLiteColumn,
-    separator: string = ","
-): SQLAggregate<string> => ({
-    sql: `GROUP_CONCAT(${column._.name}, ?)`,
-    params: [separator],
-});
+export const groupConcat = (column: AnySQLiteColumn, separator: string = ','): Expression<string> =>
+    sql<string>`GROUP_CONCAT(${sql.ref(column._.name)}, ${sql.val(separator)})`
 
-// Helper to use aggregates with an alias
-export const as = <T>(aggregate: SQLAggregate<T>, alias: string): SQLAggregate<T> & { alias: string } => ({
-    ...aggregate,
-    alias,
-});
-
+export const as = <T>(aggregate: Expression<T>, alias: string): Expression<T> & { alias: string } =>
+    Object.assign(aggregate, { alias })

@@ -1,78 +1,70 @@
-import { BaseQueryBuilder } from './query-base'
-import Database from '@tauri-apps/plugin-sql'
+import { Kysely } from 'kysely'
 import { AnyTable, InferSelectModel } from '../types'
 import { MissingWhereClauseError } from '../errors'
+import { Condition } from '../operators'
 
-export class DeleteQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
-    private returningColumns: (keyof T['_']['columns'])[] = []
-    private hasWhereClause = false
-    private allowGlobal = false
+export class DeleteQueryBuilder<T extends AnyTable> {
+    private _builder: any
+    private _table: T
+    private _returningColumns: (keyof T['_']['columns'])[] = []
+    private _hasWhereClause = false
+    private _allowGlobal = false
 
-    constructor(db: Database, private table: T) {
-        super(db)
-        this.query = `DELETE FROM ${table._.name}`
+    constructor(private readonly kysely: Kysely<any>, table: T) {
+        this._table = table
+        this._builder = kysely.deleteFrom(table._.name)
     }
 
-    where(condition: any): this {
-        this.hasWhereClause = true
-        return super.where(condition)
+    where(condition: Condition): this {
+        this._hasWhereClause = true
+        this._builder = this._builder.where(condition)
+        return this
     }
 
     allowGlobalOperation(): this {
-        this.allowGlobal = true
+        this._allowGlobal = true
         return this
     }
 
     returning(...columns: (keyof T['_']['columns'])[]): this {
-        this.returningColumns.push(...columns)
+        this._returningColumns.push(...columns)
         return this
     }
 
     async execute(): Promise<T extends AnyTable ? (InferSelectModel<T> & Record<string, any>)[] : never> {
-        // Validate WHERE clause exists unless explicitly allowed
-        if (!this.hasWhereClause && !this.allowGlobal) {
-            throw new MissingWhereClauseError('DELETE', this.table._.name)
+        if (!this._hasWhereClause && !this._allowGlobal) {
+            throw new MissingWhereClauseError('DELETE', this._table._.name)
         }
 
-        const { sql, params } = this.build()
-
-        if (this.returningColumns.length > 0) {
-            const returningNames = this.returningColumns
-                .map((col) => this.table._.columns[col as string]._.name)
-                .join(', ')
-            const sqlWithReturning = `${sql} RETURNING ${returningNames}`
-            return this.db.select(sqlWithReturning, params) as any
-        } else {
-            const result = await this.db.execute(sql, params)
-            return [{ rowsAffected: result.rowsAffected }] as any
+        if (this._returningColumns.length > 0) {
+            const cols = this._returningColumns.map(
+                (k) => this._table._.columns[k as string]._.name
+            )
+            return this._builder.returning(cols).execute() as any
         }
+
+        const result = await this._builder.executeTakeFirst()
+        return [{ rowsAffected: Number(result?.numDeletedRows ?? 0) }] as any
     }
 
     async returningAll(): Promise<InferSelectModel<T>[]> {
-        const allColumns = Object.keys(this.table._.columns) as (keyof T['_']['columns'])[]
-        return this.returning(...allColumns).execute()
+        const allCols = Object.keys(this._table._.columns) as (keyof T['_']['columns'])[]
+        return this.returning(...allCols).execute() as any
     }
 
     async returningFirst(): Promise<InferSelectModel<T> | undefined> {
-        const allColumns = Object.keys(this.table._.columns) as (keyof T['_']['columns'])[]
-        const results = await this.returning(...allColumns).execute()
-        return results[0] as InferSelectModel<T> | undefined
+        const results = await this.returningAll()
+        return results[0]
     }
 
     toSQL(): { sql: string; params: any[] } {
-        // Note: toSQL() doesn't validate WHERE clause - it's for debugging only
-        const { sql, params } = this.build()
-
-        if (this.returningColumns.length > 0) {
-            const returningNames = this.returningColumns
-                .map((col) => this.table._.columns[col as string]._.name)
-                .join(', ')
-            return {
-                sql: `${sql} RETURNING ${returningNames}`,
-                params,
-            }
+        let builder = this._builder
+        if (this._returningColumns.length > 0) {
+            builder = builder.returning(
+                this._returningColumns.map((k) => this._table._.columns[k as string]._.name)
+            )
         }
-
-        return { sql, params }
+        const compiled = builder.compile()
+        return { sql: compiled.sql, params: [...compiled.parameters] }
     }
 }

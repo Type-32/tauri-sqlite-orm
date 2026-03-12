@@ -1,62 +1,44 @@
-import Database from "@tauri-apps/plugin-sql";
-import {SelectQueryBuilder} from "./select";
-import {InsertQueryBuilder} from "./insert";
-import {UpdateQueryBuilder} from "./update";
-import {DeleteQueryBuilder} from "./delete";
-import {BaseQueryBuilder} from "./query-base";
-
-import {AnyTable} from "../types";
+import { Kysely } from 'kysely'
+import { SelectQueryBuilder } from './select'
+import { InsertQueryBuilder } from './insert'
+import { UpdateQueryBuilder } from './update'
+import { DeleteQueryBuilder } from './delete'
+import { AnyTable } from '../types'
 
 export class WithQueryBuilder {
-    private ctes: Array<{ alias: string; query: string; params: any[] }> = [];
+    private _ctes: Array<{ alias: string; query: any }> = []
 
-    constructor(private db: Database) {
+    constructor(private readonly kysely: Kysely<any>) {}
+
+    with(alias: string, query: SelectQueryBuilder<any, any>): this {
+        this._ctes.push({ alias, query: query.toKyselyExpression() })
+        return this
     }
 
-    with(alias: string, query: { sql: string; params: any[] }): this {
-        this.ctes.push({alias, query: query.sql, params: query.params});
-        return this;
+    private applyWith(builder: any): any {
+        let b = builder
+        for (const { alias, query } of this._ctes) {
+            b = b.with(alias, () => query)
+        }
+        return b
     }
 
-    select<
-        T extends AnyTable,
-        C extends (keyof T["_"]["columns"])[] | undefined = undefined
-    >(table: T, columns?: C): SelectQueryBuilder<T, C> {
-        const builder = new SelectQueryBuilder(this.db, table, columns);
-        this.applyWithClause(builder);
-        return builder;
+    select<T extends AnyTable, C extends (keyof T['_']['columns'])[] | undefined = undefined>(
+        table: T,
+        columns?: C
+    ): SelectQueryBuilder<T, C> {
+        return new SelectQueryBuilder(this.kysely, table, columns)
     }
 
     insert<T extends AnyTable>(table: T): InsertQueryBuilder<T> {
-        const builder = new InsertQueryBuilder(this.db, table);
-        this.applyWithClause(builder);
-        return builder;
+        return new InsertQueryBuilder(this.kysely, table)
     }
 
     update<T extends AnyTable>(table: T): UpdateQueryBuilder<T> {
-        const builder = new UpdateQueryBuilder(this.db, table);
-        this.applyWithClause(builder);
-        return builder;
+        return new UpdateQueryBuilder(this.kysely, table)
     }
 
     delete<T extends AnyTable>(table: T): DeleteQueryBuilder<T> {
-        const builder = new DeleteQueryBuilder(this.db, table);
-        this.applyWithClause(builder);
-        return builder;
-    }
-
-    private applyWithClause(builder: BaseQueryBuilder): void {
-        if (this.ctes.length > 0) {
-            const cteSql = this.ctes
-                .map((cte) => `${cte.alias} AS (${cte.query})`)
-                .join(", ");
-            builder["query"] = `WITH ${cteSql} ${builder["query"]}`;
-
-            // Add CTE params to the beginning of the params array
-            builder["params"] = [
-                ...this.ctes.flatMap((cte) => cte.params),
-                ...builder["params"],
-            ];
-        }
+        return new DeleteQueryBuilder(this.kysely, table)
     }
 }

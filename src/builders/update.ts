@@ -1,175 +1,140 @@
-import {BaseQueryBuilder} from "./query-base";
-import Database from "@tauri-apps/plugin-sql";
-import {InferInsertModel} from "../orm";
-import {AnyTable, InferSelectModel} from "../types";
-import {MissingWhereClauseError, UpdateValidationError, ColumnNotFoundError} from "../errors";
-import {serializeValue} from "../serialization";
+import { Kysely, sql } from 'kysely'
+import { InferInsertModel } from '../orm'
+import { AnyTable, InferSelectModel } from '../types'
+import { MissingWhereClauseError, UpdateValidationError, ColumnNotFoundError } from '../errors'
+import { serializeValue } from '../serialization'
+import { Condition } from '../operators'
 
-export class UpdateQueryBuilder<T extends AnyTable> extends BaseQueryBuilder {
-    private updateData: Partial<InferInsertModel<T>> = {};
-    private returningColumns: (keyof T["_"]["columns"])[] = [];
-    private hasWhereClause = false;
-    private allowGlobal = false;
-    private incrementDecrementOps: Array<{column: string; op: 'increment' | 'decrement'; value: number}> = [];
+export class UpdateQueryBuilder<T extends AnyTable> {
+    private _builder: any
+    private _table: T
+    private _updateData: Partial<InferInsertModel<T>> = {}
+    private _returningColumns: (keyof T['_']['columns'])[] = []
+    private _hasWhereClause = false
+    private _allowGlobal = false
+    private _incrementDecrementOps: Array<{
+        column: string
+        op: 'increment' | 'decrement'
+        value: number
+    }> = []
 
-    constructor(db: Database, private table: T) {
-        super(db);
-        this.query = `UPDATE ${table._.name}`;
+    constructor(private readonly kysely: Kysely<any>, table: T) {
+        this._table = table
+        this._builder = kysely.updateTable(table._.name)
     }
 
     set(data: Partial<InferInsertModel<T>>): this {
-        this.updateData = {...this.updateData, ...data};
-        return this;
+        this._updateData = { ...this._updateData, ...data }
+        return this
     }
 
-    where(condition: any): this {
-        this.hasWhereClause = true;
-        return super.where(condition);
+    where(condition: Condition): this {
+        this._hasWhereClause = true
+        this._builder = this._builder.where(condition)
+        return this
     }
 
-    increment(column: keyof T["_"]["columns"], value: number = 1): this {
-        const col = this.table._.columns[column as string];
-        if (!col) {
-            throw new ColumnNotFoundError(String(column), this.table._.name);
-        }
-        this.incrementDecrementOps.push({column: col._.name, op: 'increment', value});
-        return this;
+    increment(column: keyof T['_']['columns'], value: number = 1): this {
+        const col = this._table._.columns[column as string]
+        if (!col) throw new ColumnNotFoundError(String(column), this._table._.name)
+        this._incrementDecrementOps.push({ column: col._.name, op: 'increment', value })
+        return this
     }
 
-    decrement(column: keyof T["_"]["columns"], value: number = 1): this {
-        const col = this.table._.columns[column as string];
-        if (!col) {
-            throw new ColumnNotFoundError(String(column), this.table._.name);
-        }
-        this.incrementDecrementOps.push({column: col._.name, op: 'decrement', value});
-        return this;
+    decrement(column: keyof T['_']['columns'], value: number = 1): this {
+        const col = this._table._.columns[column as string]
+        if (!col) throw new ColumnNotFoundError(String(column), this._table._.name)
+        this._incrementDecrementOps.push({ column: col._.name, op: 'decrement', value })
+        return this
     }
 
     allowGlobalOperation(): this {
-        this.allowGlobal = true;
-        return this;
+        this._allowGlobal = true
+        return this
     }
 
-    returning(...columns: (keyof T["_"]["columns"])[]): this {
-        this.returningColumns.push(...columns);
-        return this;
+    returning(...columns: (keyof T['_']['columns'])[]): this {
+        this._returningColumns.push(...columns)
+        return this
     }
 
-    private buildUpdateClause(): { sql: string; params: any[] } {
-        const finalUpdateData = {...this.updateData};
+    private buildSetClause(): Record<string, any> {
+        const finalData: Partial<InferInsertModel<T>> = { ...this._updateData }
 
-        // Apply $onUpdateFn for columns that don't have explicit values
-        for (const [key, column] of Object.entries(this.table._.columns)) {
-            const typedKey = key as keyof T["_"]["columns"];
-
-            if (
-                (finalUpdateData as any)[typedKey] === undefined &&
-                column.options.$onUpdateFn
-            ) {
-                (finalUpdateData as any)[typedKey] = column.options.$onUpdateFn();
+        for (const [key, column] of Object.entries(this._table._.columns)) {
+            if ((finalData as any)[key] === undefined && column.options.$onUpdateFn) {
+                ;(finalData as any)[key] = column.options.$onUpdateFn()
             }
         }
 
-        const baseQuery = this.query;
-        const whereParams = this.params;
+        const entries = Object.entries(finalData)
+        const hasSetData = entries.length > 0
+        const hasOps = this._incrementDecrementOps.length > 0
 
-        let tablePart = baseQuery;
-        let whereClause = "";
-        const whereIndex = baseQuery.indexOf(" WHERE ");
-        if (whereIndex !== -1) {
-            tablePart = baseQuery.substring(0, whereIndex);
-            whereClause = baseQuery.substring(whereIndex);
+        if (!hasSetData && !hasOps) {
+            throw new UpdateValidationError(
+                'Cannot execute an update query without a .set(), .increment(), or .decrement() call.'
+            )
         }
 
-        const entries = Object.entries(finalUpdateData);
-        const hasSetData = entries.length > 0;
-        const hasIncrementDecrement = this.incrementDecrementOps.length > 0;
+        const setMap: Record<string, any> = {}
 
-        if (!hasSetData && !hasIncrementDecrement) {
-            throw new UpdateValidationError("Cannot execute an update query without a .set(), .increment(), or .decrement() call.");
+        for (const [key, value] of entries) {
+            const column = (this._table._.columns as any)[key]
+            if (!column) throw new ColumnNotFoundError(key, this._table._.name)
+            setMap[column._.name] = serializeValue(value, column)
         }
 
-        const setClauses: string[] = [];
-        const setParams: any[] = [];
-
-        // Add regular SET clauses
-        if (hasSetData) {
-            for (const [key, value] of entries) {
-                const column = (this.table._.columns as any)[key];
-                if (!column) {
-                    throw new ColumnNotFoundError(key, this.table._.name);
-                }
-                setClauses.push(`${column._.name} = ?`);
-                setParams.push(serializeValue(value, column));
-            }
+        for (const op of this._incrementDecrementOps) {
+            const sign = op.op === 'increment' ? '+' : '-'
+            setMap[op.column] = sql.raw(`${op.column} ${sign} ${op.value}`)
         }
 
-        // Add increment/decrement clauses
-        for (const op of this.incrementDecrementOps) {
-            const sign = op.op === 'increment' ? '+' : '-';
-            setClauses.push(`${op.column} = ${op.column} ${sign} ?`);
-            setParams.push(op.value);
-        }
-
-        const setClause = setClauses.join(", ");
-
-        const sql = `${tablePart} SET ${setClause}${whereClause}`;
-        const params = [...setParams, ...whereParams];
-
-        return {sql, params};
+        return setMap
     }
 
     async execute(): Promise<
         T extends AnyTable ? (InferSelectModel<T> & Record<string, any>)[] : never
     > {
-        // Validate WHERE clause exists unless explicitly allowed
-        if (!this.hasWhereClause && !this.allowGlobal) {
-            throw new MissingWhereClauseError('UPDATE', this.table._.name);
+        if (!this._hasWhereClause && !this._allowGlobal) {
+            throw new MissingWhereClauseError('UPDATE', this._table._.name)
         }
 
-        const {sql: updateSql, params} = this.buildUpdateClause();
+        const setMap = this.buildSetClause()
+        let builder = this._builder.set(setMap)
 
-        if (this.returningColumns.length > 0) {
-            const returningNames = this.returningColumns
-                .map((col) => this.table._.columns[col as string]._.name)
-                .join(", ");
-            const sqlWithReturning = `${updateSql} RETURNING ${returningNames}`;
-            return this.db.select(sqlWithReturning, params) as any;
-        } else {
-            const result = await this.db.execute(updateSql, params);
-            return [{rowsAffected: result.rowsAffected}] as any;
+        if (this._returningColumns.length > 0) {
+            const cols = this._returningColumns.map(
+                (k) => this._table._.columns[k as string]._.name
+            )
+            return builder.returning(cols).execute() as any
         }
+
+        const result = await builder.executeTakeFirst()
+        return [{ rowsAffected: Number(result?.numUpdatedRows ?? 0) }] as any
     }
 
     async returningAll(): Promise<InferSelectModel<T>[]> {
-        const allColumns = Object.keys(
-            this.table._.columns
-        ) as (keyof T["_"]["columns"])[];
-        return this.returning(...allColumns).execute();
+        const allCols = Object.keys(this._table._.columns) as (keyof T['_']['columns'])[]
+        return this.returning(...allCols).execute() as any
     }
 
     async returningFirst(): Promise<InferSelectModel<T> | undefined> {
-        const allColumns = Object.keys(
-            this.table._.columns
-        ) as (keyof T["_"]["columns"])[];
-        const results = await this.returning(...allColumns).execute();
-        return results[0] as InferSelectModel<T> | undefined;
+        const results = await this.returningAll()
+        return results[0]
     }
 
     toSQL(): { sql: string; params: any[] } {
-        // Note: toSQL() doesn't validate WHERE clause - it's for debugging only
-        const {sql: updateSql, params} = this.buildUpdateClause();
+        const setMap = this.buildSetClause()
+        let builder = this._builder.set(setMap)
 
-        if (this.returningColumns.length > 0) {
-            const returningNames = this.returningColumns
-                .map((col) => this.table._.columns[col as string]._.name)
-                .join(", ");
-            return {
-                sql: `${updateSql} RETURNING ${returningNames}`,
-                params,
-            };
+        if (this._returningColumns.length > 0) {
+            builder = builder.returning(
+                this._returningColumns.map((k) => this._table._.columns[k as string]._.name)
+            )
         }
 
-        return { sql: updateSql, params };
+        const compiled = builder.compile()
+        return { sql: compiled.sql, params: [...compiled.parameters] }
     }
 }
