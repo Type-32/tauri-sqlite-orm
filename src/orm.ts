@@ -93,11 +93,10 @@ export class SQLiteColumn<
     /**
      * Lazy reference (Drizzle-style) - use getter to allow self-refs and forward refs.
      * Use table._.columns.columnName (e.g. references(() => users._.columns.id)).
-     * For self-references, add explicit return type to fix TS7022/TS7024:
-     * references((): AnySQLiteColumn => messages._.columns.id)
+     * Accepts () => any to avoid TS7022/TS7024 on self-references (no import needed).
      */
     references(
-        getRef: () => AnySQLiteColumn,
+        getRef: () => any,
         options?: { onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'; onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action' }
     ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
         return new SQLiteColumn(

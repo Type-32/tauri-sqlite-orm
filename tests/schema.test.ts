@@ -1,6 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
 import { sqliteTable, integer, text, boolean, TauriORM } from '../src/index'
-import type { AnySQLiteColumn } from '../src/types'
 import { MockDatabase, removeDb } from './helpers/mock-db'
 import { createOrm, users, posts, tags, postTags, schema } from './helpers/schema'
 
@@ -157,9 +156,7 @@ describe('isSchemaDirty() and migrateIfDirty()', () => {
         const messages = sqliteTable('_self_ref_messages', {
             id: integer('id').primaryKey().autoincrement(),
             text: text('text').notNull(),
-            quotingMessageId: integer('quoting_message_id').references(
-                (): AnySQLiteColumn => messages._.columns.id
-            ),
+            quotingMessageId: integer('quoting_message_id').references(() => messages._.columns.id),
         })
         const ormSelfRef = new TauriORM(db, { ...schema, _self_ref_messages: messages })
         await ormSelfRef.migrate()
