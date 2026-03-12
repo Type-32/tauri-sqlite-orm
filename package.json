@@ -19,6 +19,7 @@
         "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
         "test": "bun test",
         "release:minor": "bun run build && bun pm version minor && bun publish",
+        "release:prerelease": "bun run build && bun pm version minor && bun publish",
         "release:patch": "bun run build && bun pm version patch && bun publish"
     },
     "keywords": [

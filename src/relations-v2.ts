@@ -68,11 +68,20 @@ function buildTableRef(table: AnyTable): Record<string, AnySQLiteColumn> {
     return { ...table._.columns }
 }
 
-/** Build the r object passed to defineRelations callback */
-function buildR<Tables extends Record<string, AnyTable>>(
-    tables: Tables
-): {
-    [K in keyof Tables]: Record<string, AnySQLiteColumn>
+/** Extract table keys from schema (values that extend AnyTable) */
+type ExtractTableKeys<T> = { [K in keyof T]: T[K] extends AnyTable ? K : never }[keyof T]
+type ExtractTables<T extends Record<string, unknown>> = Pick<
+    T,
+    Extract<ExtractTableKeys<T>, keyof T>
+> extends infer R
+    ? R extends Record<string, AnyTable>
+        ? R
+        : Record<string, AnyTable>
+    : Record<string, AnyTable>
+
+/** Build the r object passed to defineRelations callback - all properties required to avoid TS2722 */
+export type BuildR<Tables extends Record<string, AnyTable>> = {
+    [K in keyof Tables]: Tables[K]['_']['columns']
 } & {
     one: {
         [K in keyof Tables]: (opts: OneRelationOptions) => OneRelation<Tables[K]>
@@ -80,7 +89,11 @@ function buildR<Tables extends Record<string, AnyTable>>(
     many: {
         [K in keyof Tables]: (opts?: ManyRelationOptions) => ManyRelation<Tables[K]>
     }
-} {
+}
+
+function buildR<Tables extends Record<string, AnyTable>>(
+    tables: Tables
+): BuildR<Tables> {
     const tableRefs = {} as Record<string, Record<string, AnySQLiteColumn>>
     const oneFns = {} as Record<string, (opts: OneRelationOptions) => OneRelation<AnyTable>>
     const manyFns = {} as Record<string, (opts?: ManyRelationOptions) => ManyRelation<AnyTable>>
@@ -175,9 +188,9 @@ function applyRelationsToTables(
     }
 }
 
-export type DefineRelationsCallback<Tables extends Record<string, AnyTable>> = (r: ReturnType<
-    typeof buildR
->) => {
+export type DefineRelationsCallback<Tables extends Record<string, AnyTable>> = (
+    r: BuildR<Tables>
+) => {
     [K in keyof Tables]?: Record<string, OneRelation | ManyRelation>
 }
 
@@ -203,11 +216,11 @@ export type DefineRelationsCallback<Tables extends Record<string, AnyTable>> = (
  */
 export function defineRelations<TSchema extends Record<string, unknown>>(
     schema: TSchema,
-    callback: DefineRelationsCallback<Record<string, AnyTable>>
+    callback: DefineRelationsCallback<ExtractTables<TSchema>>
 ): Record<string, Record<string, OneRelation | ManyRelation>> {
-    const tables = extractTables(schema)
+    const tables = extractTables(schema) as ExtractTables<TSchema>
     const r = buildR(tables)
-    const result = callback(r as any)
+    const result = callback(r)
     applyRelationsToTables(tables, result as Record<string, Record<string, OneRelation | ManyRelation>>)
     return result as Record<string, Record<string, OneRelation | ManyRelation>>
 }
