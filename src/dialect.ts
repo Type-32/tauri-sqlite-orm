@@ -6,25 +6,38 @@ import {
     DialectAdapter,
     Driver,
     Kysely,
-    QueryCompiler,
     QueryResult,
     SqliteAdapter,
     SqliteIntrospector,
-    SqliteQueryCompiler,
     TransactionSettings,
 } from 'kysely'
+import { TauriQueryCompiler } from './tauri-query-compiler'
 
 /**
  * Minimal interface that any SQLite-over-Tauri (or compatible mock) database must satisfy.
  * Using this instead of the concrete `@tauri-apps/plugin-sql` type keeps the dialect
  * portable and testable outside a Tauri runtime.
  */
+/**
+ * Matches @tauri-apps/plugin-sql QueryResult so Database satisfies DatabaseLike.
+ */
 export interface DatabaseLike {
-    select<T>(query: string, params?: any[]): Promise<T>
+    select<T>(query: string, bindValues?: unknown[]): Promise<T>
     execute(
         query: string,
-        params?: any[]
-    ): Promise<{ lastInsertId?: number; rowsAffected?: number }>
+        bindValues?: unknown[]
+    ): Promise<{ rowsAffected: number; lastInsertId?: number }>
+}
+
+/**
+ * Type assertion for @tauri-apps/plugin-sql Database when TS reports
+ * structural incompatibility. Use: new TauriORM(asTauriDatabase(db), schema)
+ */
+export function asTauriDatabase(db: {
+    select<T>(query: string, bindValues?: unknown[]): Promise<T>
+    execute(query: string, bindValues?: unknown[]): Promise<{ rowsAffected: number; lastInsertId?: number }>
+}): DatabaseLike {
+    return db as DatabaseLike
 }
 
 class TauriConnection implements DatabaseConnection {
@@ -97,7 +110,7 @@ export class TauriDialect implements Dialect {
         return new SqliteIntrospector(db)
     }
 
-    createQueryCompiler(): QueryCompiler {
-        return new SqliteQueryCompiler()
+    createQueryCompiler() {
+        return new TauriQueryCompiler()
     }
 }

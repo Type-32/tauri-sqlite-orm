@@ -629,4 +629,12 @@ describe('toSQL() debugging', () => {
             .toSQL()
         expect(sql.toLowerCase()).toContain('delete')
     })
+
+    test('SQL uses $1,$2,$3 placeholders for @tauri-apps/plugin-sql compatibility', () => {
+        const { sql } = orm.select(users)
+            .where(eq(users._.columns.email, 'test@example.com'))
+            .toSQL()
+        expect(sql).toMatch(/\$1/)
+        expect(sql).not.toMatch(/\?/)
+    })
 })
