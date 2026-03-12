@@ -24,7 +24,7 @@ export interface DatabaseLike {
     execute(
         query: string,
         params?: any[]
-    ): Promise<{ lastInsertId: number; rowsAffected: number }>
+    ): Promise<{ lastInsertId?: number; rowsAffected?: number }>
 }
 
 class TauriConnection implements DatabaseConnection {
