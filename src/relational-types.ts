@@ -4,7 +4,9 @@ import type { OneRelation, ManyRelation } from './orm'
 /** Maps relations() return type to typed relation configs with foreign table preserved */
 export type InferRelationsMap<R extends Record<string, OneRelation | ManyRelation>> = {
     [K in keyof R]: R[K] extends OneRelation<infer T>
-        ? { type: 'one'; foreignTable: T }
+        ? R[K] extends { config?: { optional?: infer O } }
+            ? { type: 'one'; foreignTable: T; optional: O }
+            : { type: 'one'; foreignTable: T; optional?: true }
         : R[K] extends ManyRelation<infer T>
         ? { type: 'many'; foreignTable: T }
         : never
@@ -47,9 +49,11 @@ type InferRelationFields<
 > = {
     [K in keyof TWith & keyof TRelationsMap]: TWith[K] extends false | undefined
         ? never
-        : TRelationsMap[K] extends { type: 'one'; foreignTable: infer T }
+        : TRelationsMap[K] extends { type: 'one'; foreignTable: infer T; optional?: infer O }
         ? T extends AnyTable
-            ? InferSelectModel<T> & InferNestedFields<T, TWith[K], TAllRelations>
+            ? ([O] extends [false]
+                ? InferSelectModel<T> & InferNestedFields<T, TWith[K], TAllRelations>
+                : (InferSelectModel<T> & InferNestedFields<T, TWith[K], TAllRelations>) | null)
             : never
         : TRelationsMap[K] extends { type: 'many'; foreignTable: infer T }
         ? T extends AnyTable

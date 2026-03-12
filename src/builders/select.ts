@@ -1,5 +1,5 @@
 import { Expression, Kysely, sql, SqlBool } from 'kysely'
-import { Condition } from '../operators'
+import { and, Condition } from '../operators'
 import { AnySQLiteColumn, AnyTable, InferSelectModel } from '../types'
 import { deserializeValue } from '../serialization'
 
@@ -212,23 +212,58 @@ export class SelectQueryBuilder<
                         )
                         .select(aliasedCols as any)
                 } else if (relation.type === 'many') {
-                    const refRelation = Object.entries(foreignTable.relations).find(
-                        ([, r]) => r.foreignTable === parentTable
-                    )
-                    if (refRelation && refRelation[1].fields && refRelation[1].references) {
-                        const [, relationConfig] = refRelation
-                        const onCondition = sql<SqlBool>`${sql.join(
-                            relationConfig.fields!.map((field, i) =>
-                                sql`${sql.ref(`${foreignAlias}.${field._.name}`)} = ${sql.ref(`${parentAlias}.${relationConfig.references![i]._.name}`)}`
-                            ),
-                            sql` AND `
-                        )}`
+                    // Many-to-many via through(): parent -> junction -> foreign
+                    if (relation.junctionTable && relation.fromJunction && relation.toJunction) {
+                        const junctionTable = relation.junctionTable
+                        const junctionAlias = `${foreignAlias}_jn`
+                        const fromJ = relation.fromJunction
+                        const toJ = relation.toJunction
+                        const join1 = sql<SqlBool>`${sql.ref(`${parentAlias}.${fromJ.column._.name}`)} = ${sql.ref(`${junctionAlias}.${fromJ.junctionColumn._.name}`)}`
+                        let join2: Expression<SqlBool> = sql<SqlBool>`${sql.ref(`${junctionAlias}.${toJ.junctionColumn._.name}`)} = ${sql.ref(`${foreignAlias}.${toJ.column._.name}`)}`
+                        if (relation.where) {
+                            join2 = and(join2, relation.where(foreignAlias) as Condition)
+                        }
                         this._builder = this._builder
                             .leftJoin(
+                                `${junctionTable._.name} as ${junctionAlias}`,
+                                (join: any) => join.on(join1)
+                            )
+                            .leftJoin(
                                 `${foreignTable._.name} as ${foreignAlias}`,
-                                (join: any) => join.on(onCondition)
+                                (join: any) => join.on(join2)
                             )
                             .select(aliasedCols as any)
+                    } else {
+                        // v2: explicit fields/references, or v1: infer from reverse one relation
+                        let fields: AnySQLiteColumn[] | undefined = relation.fields
+                        let references: AnySQLiteColumn[] | undefined = relation.references
+                        if (!fields || !references) {
+                            const refRelation = Object.entries(foreignTable.relations).find(
+                                ([, r]) => r.foreignTable === parentTable
+                            )
+                            if (refRelation && refRelation[1].fields && refRelation[1].references) {
+                                const [, relationConfig] = refRelation
+                                fields = relationConfig.fields
+                                references = relationConfig.references
+                            }
+                        }
+                        if (fields && references) {
+                            let onCondition: Expression<SqlBool> = sql<SqlBool>`${sql.join(
+                                fields.map((field, i) =>
+                                    sql`${sql.ref(`${foreignAlias}.${field._.name}`)} = ${sql.ref(`${parentAlias}.${references![i]._.name}`)}`
+                                ),
+                                sql` AND `
+                            )}`
+                            if (relation.where) {
+                                onCondition = and(onCondition, relation.where(foreignAlias) as Condition)
+                            }
+                            this._builder = this._builder
+                                .leftJoin(
+                                    `${foreignTable._.name} as ${foreignAlias}`,
+                                    (join: any) => join.on(onCondition)
+                                )
+                                .select(aliasedCols as any)
+                        }
                     }
                 }
 
@@ -347,6 +382,8 @@ export class SelectQueryBuilder<
                     const column = this._table._.columns[tsName]
                     result[tsName] = column ? deserializeValue(value, column) : value
                 } else {
+                    // Skip junction table alias (used for through() many-to-many)
+                    if (tableAlias.endsWith('_jn')) continue
                     const path = parseRelationPath(tableAlias, this._table._.name)
                     if (path.length > 0) {
                         const relationConfig = getNestedRelation(this._table, path)

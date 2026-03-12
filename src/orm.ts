@@ -755,13 +755,35 @@ export class Relation<T extends AnyTable = AnyTable> {
 }
 
 export class OneRelation<T extends AnyTable = AnyTable> extends Relation<T> {
-    constructor(foreignTable: T, public config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }) {
+    constructor(
+        foreignTable: T,
+        public config?: {
+            fields: AnySQLiteColumn[]
+            references: AnySQLiteColumn[]
+            optional?: boolean
+            alias?: string
+        }
+    ) {
         super(foreignTable)
     }
 }
 
 export class ManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
-    constructor(foreignTable: T) {
+    constructor(
+        foreignTable: T,
+        public config?: {
+            from?: AnySQLiteColumn[]
+            to?: AnySQLiteColumn[]
+            through?: {
+                junctionTable: AnyTable
+                fromRef: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
+                toRef: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
+            }
+            optional?: boolean
+            alias?: string
+            where?: (alias: string) => unknown
+        }
+    ) {
         super(foreignTable)
     }
 }
@@ -781,7 +803,7 @@ export const relations = <T extends AnyTable, R extends Record<string, Relation>
     const builtRelations = relationsCallback({
         one: <U extends AnyTable>(
             foreignTable: U,
-            config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
+            config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[]; optional?: boolean; alias?: string }
         ) => {
             return new OneRelation(foreignTable, config)
         },
@@ -797,6 +819,8 @@ export const relations = <T extends AnyTable, R extends Record<string, Relation>
                 foreignTable: relation.foreignTable,
                 fields: relation.config?.fields,
                 references: relation.config?.references,
+                optional: relation.config?.optional,
+                alias: relation.config?.alias,
             }
         } else if (relation instanceof ManyRelation) {
             table.relations[name] = {

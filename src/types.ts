@@ -82,6 +82,20 @@ export type RelationType = 'one' | 'many'
 export interface RelationConfig {
     type: RelationType
     foreignTable: AnyTable
+    /** For one: local FK columns. For many (v2): foreign table's FK columns. */
     fields?: AnySQLiteColumn[]
+    /** For one: foreign PK columns. For many (v2): parent table's PK columns. */
     references?: AnySQLiteColumn[]
+    /** For many-to-many via through(): junction table between parent and foreign */
+    junctionTable?: AnyTable
+    /** Parent column -> junction column (parent PK = junction FK to parent) */
+    fromJunction?: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
+    /** Junction column -> foreign column (junction FK to foreign = foreign PK) */
+    toJunction?: { junctionColumn: AnySQLiteColumn; column: AnySQLiteColumn }
+    /** When false, one relation is required (type-level: T not T | null) */
+    optional?: boolean
+    /** Alias for the relation (e.g. for self-referential disambiguation) */
+    alias?: string
+    /** Predefined filter for many relations: (alias) => Condition. Receives the joined table alias. */
+    where?: (alias: string) => unknown
 }
