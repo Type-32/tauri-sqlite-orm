@@ -90,7 +90,12 @@ export class SQLiteColumn<
         return new SQLiteColumn(this._.name, this.type, { ...this.options, unique: true, mode: this._.mode })
     }
 
-    /** Lazy reference (Drizzle-style) - use getter to allow self-refs and forward refs */
+    /**
+     * Lazy reference (Drizzle-style) - use getter to allow self-refs and forward refs.
+     * Use table._.columns.columnName (e.g. references(() => users._.columns.id)).
+     * For self-references, add explicit return type to fix TS7022/TS7024:
+     * references((): AnySQLiteColumn => messages._.columns.id)
+     */
     references(
         getRef: () => AnySQLiteColumn,
         options?: { onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'; onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action' }
@@ -194,16 +199,9 @@ export const sqliteTable = <TTableName extends string, TColumns extends Record<s
     columns: TColumns
 ): Table<TColumns, TTableName> => {
     const table = new Table(tableName, columns)
-    // Attach table to columns so references(() => table.column) can resolve table name
+    // Attach table to columns so references(() => table._.columns.id) can resolve table name
     for (const col of Object.values(columns)) {
         (col as any).__table = table
-    }
-    // Expose columns as table.id, table.columnName (Drizzle-style) for references(() => paper.id)
-    for (const key of Object.keys(columns)) {
-        Object.defineProperty(table, key, {
-            get: () => table._.columns[key as keyof TColumns],
-            enumerable: true,
-        })
     }
     return table
 }

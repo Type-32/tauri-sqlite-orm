@@ -37,7 +37,7 @@ export const posts = sqliteTable('posts', {
     id: integer('id').primaryKey().autoincrement(),
     title: text('title').notNull(),
     content: text('content').notNull(),
-    userId: integer('user_id').notNull().references(() => users.id),
+    userId: integer('user_id').notNull().references(() => users._.columns.id),
     views: integer('views').notNull().default(0),
     published: boolean('published').notNull().default(false),
 })
@@ -48,8 +48,8 @@ export const tags = sqliteTable('tags', {
 })
 
 export const postTags = sqliteTable('post_tags', {
-    postId: integer('post_id').notNull().references(() => posts.id),
-    tagId: integer('tag_id').notNull().references(() => tags.id),
+    postId: integer('post_id').notNull().references(() => posts._.columns.id),
+    tagId: integer('tag_id').notNull().references(() => tags._.columns.id),
 })
 
 // ─── Relations (v2 API) ───────────────────────────────────────────────────────

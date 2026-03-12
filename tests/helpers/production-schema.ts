@@ -76,7 +76,7 @@ export const session = sqliteTable('session', {
     userAgent: text('user_agent'),
     userId: text('user_id')
         .notNull()
-        .references(() => user.id),
+        .references(() => user._.columns.id),
     impersonatedBy: text('impersonated_by'),
 })
 
@@ -86,7 +86,7 @@ export const account = sqliteTable('account', {
     providerId: text('provider_id').notNull(),
     userId: text('user_id')
         .notNull()
-        .references(() => user.id),
+        .references(() => user._.columns.id),
     accessToken: text('access_token'),
     refreshToken: text('refresh_token'),
     idToken: text('id_token'),
@@ -123,10 +123,10 @@ export const article = sqliteTable('article', {
 })
 
 export const userToArticle = sqliteTable('user_to_article', {
-    userId: text('user_id').references(() => user.id),
+    userId: text('user_id').references(() => user._.columns.id),
     articleId: text('article_id')
         .notNull()
-        .references(() => article.id),
+        .references(() => article._.columns.id),
     isCreator: integer('is_creator', { mode: 'boolean' })
         .notNull()
         .default(false)
@@ -162,7 +162,7 @@ export const issue = sqliteTable('issue', {
     deadlineDate: integer('deadline_date', { mode: 'timestamp' })
         .$defaultFn(() => new Date())
         .notNull(),
-    volumeId: integer('volume_id').references(() => volume.id),
+    volumeId: integer('volume_id').references(() => volume._.columns.id),
     issueNumber: integer('issue_number'),
     createdAt: integer('created_at', { mode: 'timestamp' })
         .$defaultFn(() => new Date())
@@ -191,7 +191,7 @@ export const paper = sqliteTable('paper', {
         .notNull(),
     reviewedDate: integer('reviewed_date', { mode: 'timestamp' }).$defaultFn(() => new Date()),
     publishedDate: integer('published_date', { mode: 'timestamp' }).$defaultFn(() => new Date()),
-    issueId: integer('issue_id').references(() => issue.id),
+    issueId: integer('issue_id').references(() => issue._.columns.id),
     createdAt: integer('created_at', { mode: 'timestamp' })
         .$defaultFn(() => new Date())
         .notNull(),
@@ -201,14 +201,14 @@ export const paper = sqliteTable('paper', {
 })
 
 export const userToPaper = sqliteTable('user_to_paper', {
-    userId: text('user_id').references(() => user.id),
+    userId: text('user_id').references(() => user._.columns.id),
     initiatingAuthor: integer('initiating_author', { mode: 'boolean' })
         .notNull()
         .default(false)
         .$defaultFn(() => false),
     paperId: integer('paper_id')
         .notNull()
-        .references(() => paper.id),
+        .references(() => paper._.columns.id),
 })
 
 // ─── Relations ──────────────────────────────────────────────────────────────
