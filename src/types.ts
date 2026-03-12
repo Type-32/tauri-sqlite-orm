@@ -41,6 +41,8 @@ export interface ColumnOptions<TData, TEnum extends readonly string[] = readonly
     references?: {
         table: AnyTable
         column: AnySQLiteColumn
+        onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'
+        onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'
     }
     mode?: Mode
     $onUpdateFn?: () => TData
@@ -75,15 +77,11 @@ export type AnyTable = Table<Record<string, AnySQLiteColumn>, string>
 export type InferSelectModel<T extends AnyTable> = {
     [K in keyof T['_']['columns']]: ExtractColumnType<T['_']['columns'][K]>
 }
-export type RelationType = 'one' | 'many' | 'manyToMany'
+export type RelationType = 'one' | 'many'
 
 export interface RelationConfig {
     type: RelationType
     foreignTable: AnyTable
     fields?: AnySQLiteColumn[]
     references?: AnySQLiteColumn[]
-    // Many-to-many specific fields
-    junctionTable?: AnyTable
-    junctionFields?: AnySQLiteColumn[] // columns in junction table that reference this table
-    junctionReferences?: AnySQLiteColumn[] // columns in junction table that reference the foreign table
 }

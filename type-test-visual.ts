@@ -1,7 +1,16 @@
 // Visual Type Test - Use your IDE to inspect these types
 // Hover over the variables to see their inferred types
 
-import { sqliteTable, integer, text, boolean, InferSelectModel, InferInsertModel, TauriORM } from './src/index'
+import {
+    sqliteTable,
+    integer,
+    text,
+    boolean,
+    InferSelectModel,
+    InferInsertModel,
+    InferRelationalSelectModel,
+    TauriORM,
+} from './src/index'
 import Database from '@tauri-apps/plugin-sql'
 
 // Define a realistic schema
@@ -100,6 +109,27 @@ const invalidInsert3: UserInsert = {
     name: 'Wrong Settings',
     settings: { wrongField: 'value' },
 }
+
+// ==================== RELATIONAL SELECT MODEL TEST ====================
+// Uses schema with relations - import from test helpers for type-only check
+import { user, userRelations, session, sessionRelations } from './tests/helpers/production-schema'
+
+const withSessionsAndAccounts = { sessions: true, accounts: true } as const
+type UserWithRelations = InferRelationalSelectModel<
+    typeof user,
+    typeof userRelations,
+    typeof withSessionsAndAccounts
+>
+// UserWithRelations = User & { sessions: Session[]; accounts: Account[] }
+
+const withNested = { sessions: { with: { user: true } } } as const
+type UserWithSessionsAndUser = InferRelationalSelectModel<
+    typeof user,
+    typeof userRelations,
+    typeof withNested,
+    { user: typeof userRelations; session: typeof sessionRelations }
+>
+// UserWithSessionsAndUser = User & { sessions: (Session & { user: User })[] }
 
 // ==================== RUNTIME TYPE TEST ====================
 

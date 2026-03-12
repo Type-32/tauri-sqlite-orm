@@ -20,7 +20,34 @@ function normalizeRowKey(key: string): string {
     return key
 }
 
-type NestedInclude = boolean | { with?: Record<string, NestedInclude> }
+/** Resolve which columns to select for a relation. Always includes primary keys for deduplication. */
+function resolveRelationColumns(table: AnyTable, include: NestedInclude): AnySQLiteColumn[] {
+    const allEntries = Object.entries(table._.columns)
+    if (include === true || typeof include !== 'object') {
+        return allEntries.map(([, col]) => col)
+    }
+    const cols = include.columns
+    if (!cols) {
+        return allEntries.map(([, col]) => col)
+    }
+    const names: string[] = Array.isArray(cols)
+        ? cols
+        : Object.entries(cols)
+              .filter(([, v]) => v)
+              .map(([k]) => k)
+    const pkNames = allEntries
+        .filter(([, c]) => c.options.primaryKey)
+        .map(([k]) => k)
+    const combined = new Set([...names, ...pkNames])
+    return allEntries
+        .filter(([tsName]) => combined.has(tsName))
+        .map(([, col]) => col)
+}
+
+type NestedInclude = boolean | {
+    columns?: string[] | Record<string, boolean>
+    with?: Record<string, NestedInclude>
+}
 
 type ExtractRelationNames<T extends AnyTable> = T['relations'] extends Record<string, any>
     ? keyof T['relations'] & string
@@ -166,7 +193,8 @@ export class SelectQueryBuilder<
                 const foreignTable = relation.foreignTable
                 const foreignAlias = `${parentAlias}_${relationName}`
 
-                const aliasedCols = Object.values(foreignTable._.columns).map(
+                const selectedCols = resolveRelationColumns(foreignTable, include)
+                const aliasedCols = selectedCols.map(
                     (col) => `${foreignAlias}.${col._.name} as "${foreignAlias}.${col._.name}"`
                 )
 
@@ -201,52 +229,6 @@ export class SelectQueryBuilder<
                                 (join: any) => join.on(onCondition)
                             )
                             .select(aliasedCols as any)
-                    }
-                } else if (
-                    relation.type === 'manyToMany' &&
-                    relation.junctionTable &&
-                    relation.junctionFields &&
-                    relation.junctionReferences
-                ) {
-                    const junctionTable = relation.junctionTable
-                    const junctionAlias = `${foreignAlias}_junction`
-
-                    const parentPks = Object.values(parentTable._.columns)
-                        .filter((c) => c.options.primaryKey)
-                        .map((c) => c._.name)
-
-                    if (parentPks.length > 0 && relation.junctionFields.length > 0) {
-                        const junctionOnCondition = sql<SqlBool>`${sql.join(
-                            relation.junctionFields.map((field, i) => {
-                                const parentPk = parentPks[i] ?? parentPks[0]
-                                return sql`${sql.ref(`${parentAlias}.${parentPk}`)} = ${sql.ref(`${junctionAlias}.${field._.name}`)}`
-                            }),
-                            sql` AND `
-                        )}`
-                        this._builder = this._builder.leftJoin(
-                            `${junctionTable._.name} as ${junctionAlias}`,
-                            (join: any) => join.on(junctionOnCondition)
-                        )
-
-                        const foreignPks = Object.values(foreignTable._.columns)
-                            .filter((c) => c.options.primaryKey)
-                            .map((c) => c._.name)
-
-                        if (foreignPks.length > 0 && relation.junctionReferences.length > 0) {
-                            const foreignOnCondition = sql<SqlBool>`${sql.join(
-                                relation.junctionReferences.map((field, i) => {
-                                    const foreignPk = foreignPks[i] ?? foreignPks[0]
-                                    return sql`${sql.ref(`${junctionAlias}.${field._.name}`)} = ${sql.ref(`${foreignAlias}.${foreignPk}`)}`
-                                }),
-                                sql` AND `
-                            )}`
-                            this._builder = this._builder
-                                .leftJoin(
-                                    `${foreignTable._.name} as ${foreignAlias}`,
-                                    (join: any) => join.on(foreignOnCondition)
-                                )
-                                .select(aliasedCols as any)
-                        }
                     }
                 }
 
@@ -402,7 +384,7 @@ export class SelectQueryBuilder<
                         (v) => v !== null && v !== undefined && v !== ''
                     )
 
-                    if (relationConfig.type === 'many' || relationConfig.type === 'manyToMany') {
+                    if (relationConfig.type === 'many') {
                         if (!target[relName]) target[relName] = []
                         if (hasData) {
                             const relPks = Object.values(relationConfig.foreignTable._.columns)

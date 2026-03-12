@@ -132,6 +132,26 @@ describe('isSchemaDirty() and migrateIfDirty()', () => {
         expect(after.dirty).toBe(false)
     })
 
+    test('references with onDelete cascade are emitted in migration', async () => {
+        const cascadeTable = sqliteTable('_cascade_test', {
+            id: integer('id').primaryKey().autoincrement(),
+            refId: integer('ref_id')
+                .references(users, users._.columns.id, { onDelete: 'cascade', onUpdate: 'restrict' }),
+        })
+        const ormCascade = new TauriORM(db, { ...schema, _cascade_test: cascadeTable })
+        await ormCascade.migrate()
+        const info = await db.select<any[]>(`PRAGMA table_info('_cascade_test')`)
+        const refCol = info.find((c: any) => c.name === 'ref_id')
+        expect(refCol).toBeDefined()
+        // SQLite stores FK in sqlite_master; verify CREATE TABLE contains ON DELETE CASCADE
+        const createSql = await db.select<any[]>(
+            `SELECT sql FROM sqlite_master WHERE type='table' AND name='_cascade_test'`
+        )
+        expect((createSql[0]?.sql ?? '').toUpperCase()).toContain('ON DELETE CASCADE')
+        expect((createSql[0]?.sql ?? '').toUpperCase()).toContain('ON UPDATE RESTRICT')
+        await ormCascade.dropTable('_cascade_test')
+    })
+
     test('migrateIfDirty() returns false when already in sync', async () => {
         const orm = new TauriORM(db, schema)
         expect(await orm.migrateIfDirty()).toBe(false)

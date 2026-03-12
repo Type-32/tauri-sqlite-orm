@@ -92,12 +92,12 @@ export class SQLiteColumn<
 
     references<T extends AnyTable, K extends keyof T['_']['columns'] & string>(
         ref: T,
-        column: K | T['_']['columns'][K]
+        column: K | T['_']['columns'][K],
+        options?: { onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'; onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action' }
     ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
-        // Accept either string key or column object for better DX
         const columnKey = typeof column === 'string' ? column : (column as any)._.name as K
         const columnObj = typeof column === 'string' ? ref._.columns[column] : column as any
-        
+
         return new SQLiteColumn(
             this._.name,
             this.type,
@@ -106,6 +106,8 @@ export class SQLiteColumn<
                 references: {
                     table: ref,
                     column: columnObj,
+                    onDelete: options?.onDelete,
+                    onUpdate: options?.onUpdate,
                 },
                 mode: this._.mode
             }
@@ -240,6 +242,12 @@ export class TauriORM {
         }
         if (col.options.references) {
             sql += ` REFERENCES ${col.options.references.table._.name}(${col.options.references.column._.name})`
+            if (col.options.references.onDelete) {
+                sql += ` ON DELETE ${col.options.references.onDelete.toUpperCase()}`
+            }
+            if (col.options.references.onUpdate) {
+                sql += ` ON UPDATE ${col.options.references.onUpdate.toUpperCase()}`
+            }
         }
         return sql
     }
@@ -671,6 +679,8 @@ export class TauriORM {
                     : col.options.default ?? null,
             hasDefaultFn: col.options.$defaultFn !== undefined,
             hasOnUpdateFn: col.options.$onUpdateFn !== undefined,
+            onDelete: col.options.references?.onDelete ?? null,
+            onUpdate: col.options.references?.onUpdate ?? null,
         }
     }
 
@@ -756,32 +766,11 @@ export class ManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
     }
 }
 
-export class ManyToManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
-    constructor(
-        foreignTable: T,
-        public config: {
-            junctionTable: AnyTable
-            junctionFields: AnySQLiteColumn[] // columns in junction that reference this table
-            junctionReferences: AnySQLiteColumn[] // columns in junction that reference foreign table
-        }
-    ) {
-        super(foreignTable)
-    }
-}
-
 type InferRelations<R extends Record<string, Relation>> = {
     [K in keyof R]: R[K] extends OneRelation<infer T>
         ? { type: 'one'; foreignTable: T; fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
         : R[K] extends ManyRelation<infer T>
         ? { type: 'many'; foreignTable: T }
-        : R[K] extends ManyToManyRelation<infer T>
-        ? {
-              type: 'manyToMany'
-              foreignTable: T
-              junctionTable: AnyTable
-              junctionFields: AnySQLiteColumn[]
-              junctionReferences: AnySQLiteColumn[]
-          }
         : never
 }
 
@@ -799,16 +788,6 @@ export const relations = <T extends AnyTable, R extends Record<string, Relation>
         many: <U extends AnyTable>(foreignTable: U) => {
             return new ManyRelation(foreignTable)
         },
-        manyToMany: <U extends AnyTable>(
-            foreignTable: U,
-            config: {
-                junctionTable: AnyTable
-                junctionFields: AnySQLiteColumn[]
-                junctionReferences: AnySQLiteColumn[]
-            }
-        ) => {
-            return new ManyToManyRelation(foreignTable, config)
-        },
     })
 
     for (const [name, relation] of Object.entries(builtRelations)) {
@@ -823,14 +802,6 @@ export const relations = <T extends AnyTable, R extends Record<string, Relation>
             table.relations[name] = {
                 type: 'many',
                 foreignTable: relation.foreignTable,
-            }
-        } else if (relation instanceof ManyToManyRelation) {
-            table.relations[name] = {
-                type: 'manyToMany',
-                foreignTable: relation.foreignTable,
-                junctionTable: relation.config.junctionTable,
-                junctionFields: relation.config.junctionFields,
-                junctionReferences: relation.config.junctionReferences,
             }
         }
     }

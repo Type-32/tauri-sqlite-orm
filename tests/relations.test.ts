@@ -138,19 +138,19 @@ describe('Many-to-one: posts.include({ user })', () => {
     })
 })
 
-// ─── Many-to-many: posts → tags ──────────────────────────────────────────────
+// ─── Many-to-many (Drizzle-style): posts → postTags → tags ────────────────────
 
-describe('Many-to-many: posts.include({ tags })', () => {
-    test('loads tags for posts through junction table', async () => {
+describe('Many-to-many: posts.include({ postTags: { with: { tag: true } } })', () => {
+    test('loads postTags with nested tag for posts through junction', async () => {
         const rows = await orm.select(posts)
-            .include({ tags: true })
+            .include({ postTags: { with: { tag: true } } })
             .all()
 
         const p1 = rows.find(r => r.id === post1Id) as any
         expect(p1).toBeDefined()
-        expect(p1.tags).toHaveLength(2)
+        expect(p1.postTags).toHaveLength(2)
 
-        const tagNames = p1.tags.map((t: any) => t.name)
+        const tagNames = p1.postTags.map((pt: any) => pt.tag.name)
         expect(tagNames).toContain('javascript')
         expect(tagNames).toContain('typescript')
     })
@@ -158,35 +158,68 @@ describe('Many-to-many: posts.include({ tags })', () => {
     test('post with one tag loads correctly', async () => {
         const [p3] = await orm.select(posts)
             .where(eq(posts._.columns.id, post3Id, posts._.name))
-            .include({ tags: true })
+            .include({ postTags: { with: { tag: true } } })
             .all()
 
-        expect((p3 as any).tags).toHaveLength(1)
-        expect((p3 as any).tags[0].name).toBe('javascript')
+        expect((p3 as any).postTags).toHaveLength(1)
+        expect((p3 as any).postTags[0].tag.name).toBe('javascript')
     })
 
     test('post with no tags has empty array', async () => {
         const [p2] = await orm.select(posts)
             .where(eq(posts._.columns.id, post2Id, posts._.name))
-            .include({ tags: true })
+            .include({ postTags: true })
             .all()
 
-        expect((p2 as any).tags ?? []).toHaveLength(0)
+        expect((p2 as any).postTags ?? []).toHaveLength(0)
+    })
+
+    test('postTags only (without nested tag)', async () => {
+        const [p1] = await orm.select(posts)
+            .where(eq(posts._.columns.id, post1Id, posts._.name))
+            .include({ postTags: true })
+            .all()
+
+        expect((p1 as any).postTags).toHaveLength(2)
+        expect((p1 as any).postTags[0]).toHaveProperty('postId')
+        expect((p1 as any).postTags[0]).toHaveProperty('tagId')
+    })
+})
+
+// ─── Column selection in relations ───────────────────────────────────────────
+
+describe('Column selection in includes', () => {
+    test('postTags with columns + nested tag with columns', async () => {
+        const [p1] = await orm.select(posts)
+            .where(eq(posts._.columns.id, post1Id, posts._.name))
+            .include({
+                postTags: {
+                    columns: ['postId', 'tagId'],
+                    with: { tag: { columns: { id: true, name: true } } },
+                },
+            })
+            .all()
+        expect((p1 as any).postTags).toHaveLength(2)
+        expect((p1 as any).postTags[0].postId).toBe(post1Id)
+        expect((p1 as any).postTags[0].tag).toBeDefined()
+        expect((p1 as any).postTags[0].tag.name).toBeDefined()
+        expect((p1 as any).postTags[0].tag.id).toBeDefined()
     })
 })
 
 // ─── Combined includes ────────────────────────────────────────────────────────
 
-describe('Combined includes: posts.include({ user, tags })', () => {
-    test('loads both user and tags simultaneously', async () => {
+describe('Combined includes: posts.include({ user, postTags: { with: { tag: true } } })', () => {
+    test('loads both user and postTags with tags simultaneously', async () => {
         const [p1] = await orm.select(posts)
             .where(eq(posts._.columns.id, post1Id, posts._.name))
-            .include({ user: true, tags: true })
+            .include({ user: true, postTags: { with: { tag: true } } })
             .all()
 
         expect((p1 as any).user).toBeDefined()
         expect((p1 as any).user.name).toBe('Alice')
-        expect((p1 as any).tags).toHaveLength(2)
+        expect((p1 as any).postTags).toHaveLength(2)
+        expect((p1 as any).postTags[0].tag.name).toBeDefined()
     })
 })
 
