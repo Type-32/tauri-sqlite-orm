@@ -15,8 +15,8 @@
         "dist"
     ],
     "scripts": {
-        "build": "tsup src/index.ts --format esm,cjs --dts",
-        "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
+        "build": "tsdown src/index.ts --format esm,cjs --dts",
+        "dev": "tsdown src/index.ts --format esm,cjs --dts --watch",
         "test": "pnpm test",
         "release:minor": "pnpm run build && pnpm pm version minor && pnpm publish",
         "release:prerelease": "pnpm run build && pnpm pm version prerelease && pnpm publish",
@@ -33,7 +33,7 @@
     "license": "MIT",
     "devDependencies": {
         "@types/node": "^26.6.3",
-        "tsup": "^8.5.1",
+        "tsdown": "0.22.14",
         "typescript": "^6.0.3"
     },
     "dependencies": {
