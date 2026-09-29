@@ -20,7 +20,8 @@
         "test": "pnpm test",
         "release:minor": "pnpm run build && pnpm pm version minor && pnpm publish",
         "release:prerelease": "pnpm run build && pnpm pm version prerelease && pnpm publish",
-        "release:patch": "pnpm run build && pnpm pm version patch && pnpm publish"
+        "release:patch": "pnpm run build && pnpm pm version patch && pnpm publish",
+        "update-deps": "pnpm update --latest && pnpm add typescript@6.0.3 && pnpm approve-builds --all"
     },
     "keywords": [
         "tauri",
