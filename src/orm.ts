@@ -1,724 +1,852 @@
-import { getDb } from "./connection";
-import type { Table, Column } from "./schema-builder";
-import type { SQL } from "./sql-helpers";
+import { Expression, Kysely, sql as kyselySql, SqlBool } from 'kysely'
+import { DatabaseLike, TauriDialect } from './dialect'
+import {
+    SelectQueryBuilder,
+    InsertQueryBuilder,
+    UpdateQueryBuilder,
+    DeleteQueryBuilder,
+    WithQueryBuilder,
+    RelationsBuilder,
+} from './builders'
+import {
+    AnySQLiteColumn,
+    AnyTable,
+    ColumnDataType,
+    ColumnOptions,
+    ColumnValueTypes,
+    ExtractColumnType,
+    Mode,
+    RelationConfig,
+} from './types'
 
-class SelectQueryBuilder<T> {
-  private _table: Table<any> | null = null;
-  private _selectedColumns: string[] = ["*"];
-  private _joins: string[] = [];
-  private _where: SQL[] = [];
-  private _orderBy: string[] = [];
-  private _limit: number | null = null;
-  private _offset: number | null = null;
-  private _eager: Record<string, RelationConfig> = {};
-
-  constructor(fields?: Record<string, Column<any>>) {
-    if (fields) {
-      this._selectedColumns = Object.values(fields).map((c) => c.name);
-    }
-  }
-
-  from(table: Table<any>): this {
-    this._table = table;
-    return this;
-  }
-
-  where(...conditions: SQL[]): this {
-    this._where.push(...conditions);
-    return this;
-  }
-
-  leftJoin(otherTable: Table<any>, on: SQL): this {
-    const onSql = on.toSQL();
-    // For joins, we assume no bindings in the ON clause (col = col)
-    const joinClause = `LEFT JOIN ${otherTable._tableName} ON ${onSql.clause}`;
-    this._joins.push(joinClause);
-    return this;
-  }
-
-  orderBy(...clauses: string[]): this {
-    this._orderBy.push(...clauses);
-    return this;
-  }
-
-  limit(value: number): this {
-    this._limit = value;
-    return this;
-  }
-
-  offset(value: number): this {
-    this._offset = value;
-    return this;
-  }
-
-  // The final execution step
-  async execute(): Promise<T[]> {
-    if (!this._table) {
-      throw new Error("Cannot execute select query without a 'from' table.");
+// Column class
+export class SQLiteColumn<
+    TName extends string = string,
+    TType extends ColumnDataType = ColumnDataType,
+    TMode extends Mode = 'default',
+    TNotNull extends boolean = false,
+    THasDefault extends boolean = false,
+    TAutoincrement extends boolean = false,
+    TEnum extends readonly string[] = never,
+    TCustomType = never
+> {
+    _: {
+        name: TName
+        dataType: TType
+        mode: TMode
+        notNull: TNotNull
+        hasDefault: THasDefault
+        autoincrement: TAutoincrement
+        enum: TEnum
+        customType: TCustomType
     }
 
-    const db = getDb();
-    const bindings: any[] = [];
-    let query = `SELECT ${this._selectedColumns.join(", ")} FROM ${
-      this._table._tableName
-    }`;
-
-    // Add Joins
-    if (this._joins.length > 0) {
-      query += ` ${this._joins.join(" ")}`;
+    constructor(
+        name: TName,
+        public type: TType,
+        public options: ColumnOptions<ColumnValueTypes<TType, TMode>, TEnum> = {}
+    ) {
+        this._ = {
+            name,
+            dataType: type,
+            mode: (options.mode || 'default') as TMode,
+            notNull: (options.notNull ?? false) as TNotNull,
+            hasDefault: (options.default !== undefined || options.$defaultFn !== undefined) as THasDefault,
+            autoincrement: (options.autoincrement ?? false) as TAutoincrement,
+            enum: options.enum as TEnum,
+            customType: undefined as TCustomType,
+        }
     }
 
-    // Add Where Clauses
-    if (this._where.length > 0) {
-      const whereClauses = this._where.map((condition) => {
-        const sql = condition.toSQL();
-        bindings.push(...sql.bindings);
-        return `(${sql.clause})`;
-      });
-      query += ` WHERE ${whereClauses.join(" AND ")}`;
+    notNull(): SQLiteColumn<TName, TType, TMode, true, THasDefault, TAutoincrement, TEnum, TCustomType> {
+        return new SQLiteColumn(this._.name, this.type, { ...this.options, notNull: true, mode: this._.mode })
     }
 
-    // Add Order By
-    if (this._orderBy.length > 0) {
-      query += ` ORDER BY ${this._orderBy.join(", ")}`;
+    default(
+        value: ColumnValueTypes<TType, TMode>
+    ): SQLiteColumn<TName, TType, TMode, TNotNull, true, TAutoincrement, TEnum, TCustomType> {
+        return new SQLiteColumn(this._.name, this.type, { ...this.options, default: value, mode: this._.mode })
     }
 
-    // Add Limit
-    if (this._limit !== null) {
-      query += ` LIMIT ?`;
-      bindings.push(this._limit);
+    $defaultFn(
+        fn: () => ColumnValueTypes<TType, TMode>
+    ): SQLiteColumn<TName, TType, TMode, TNotNull, true, TAutoincrement, TEnum, TCustomType> {
+        return new SQLiteColumn(this._.name, this.type, { ...this.options, $defaultFn: fn, mode: this._.mode })
     }
 
-    // Add Offset
-    if (this._offset !== null) {
-      // LIMIT must be present for OFFSET to work in SQLite
-      if (this._limit === null) {
-        query += ` LIMIT -1`; // SQLite convention for no limit
-      }
-      query += ` OFFSET ?`;
-      bindings.push(this._offset);
+    primaryKey(): SQLiteColumn<TName, TType, TMode, true, THasDefault, TAutoincrement, TEnum, TCustomType> {
+        return new SQLiteColumn(
+            this._.name,
+            this.type,
+            { ...this.options, primaryKey: true, notNull: true, mode: this._.mode }
+        )
     }
 
-    return db.select<T[]>(query, bindings);
-  }
+    autoincrement(): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, true, TEnum, TCustomType> {
+        return new SQLiteColumn(this._.name, this.type, { ...this.options, autoincrement: true, mode: this._.mode })
+    }
+
+    unique(): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
+        return new SQLiteColumn(this._.name, this.type, { ...this.options, unique: true, mode: this._.mode })
+    }
+
+    /**
+     * Lazy reference (Drizzle-style) - use getter to allow self-refs and forward refs.
+     * Use table._.columns.columnName (e.g. references(() => users._.columns.id)).
+     * Accepts () => any to avoid TS7022/TS7024 on self-references (no import needed).
+     */
+    references(
+        getRef: () => any,
+        options?: { onDelete?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action'; onUpdate?: 'cascade' | 'set null' | 'set default' | 'restrict' | 'no action' }
+    ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
+        return new SQLiteColumn(
+            this._.name,
+            this.type,
+            {
+                ...this.options,
+                references: {
+                    getRef: () => {
+                        const column = getRef()
+                        const table = (column as any).__table
+                        if (!table) throw new Error(`Column ${(column as any)._?.name} has no __table - ensure it belongs to a table created with sqliteTable()`)
+                        return { table, column }
+                    },
+                    onDelete: options?.onDelete,
+                    onUpdate: options?.onUpdate,
+                },
+                mode: this._.mode
+            }
+        )
+    }
+
+    $onUpdateFn(
+        fn: () => ColumnValueTypes<TType, TMode>
+    ): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
+        return new SQLiteColumn(this._.name, this.type, { ...this.options, $onUpdateFn: fn, mode: this._.mode })
+    }
+
+    $type<T>(): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, T> {
+        return this as any
+    }
+
+    as(alias: string): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
+        // This is a placeholder for alias functionality
+        return this
+    }
 }
 
-// --- Main ORM Class ---
+type IsOptionalOnInsert<C extends AnySQLiteColumn> = C['_']['notNull'] extends false
+    ? true
+    : C['_']['hasDefault'] extends true
+    ? true
+    : C['_']['autoincrement'] extends true
+    ? true
+    : false
 
+type OptionalColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
+    [K in keyof TColumns]: IsOptionalOnInsert<TColumns[K]> extends true ? K : never
+}[keyof TColumns]
+
+type RequiredColumns<TColumns extends Record<string, AnySQLiteColumn>> = {
+    [K in keyof TColumns]: IsOptionalOnInsert<TColumns[K]> extends true ? never : K
+}[keyof TColumns]
+
+// Extract column type for INSERT - respect notNull even when optional
+type ExtractInsertColumnType<T extends AnySQLiteColumn> = 
+    T extends SQLiteColumn<infer _, infer TType, infer TMode, infer TNotNull, infer THasDefault, infer TAutoincrement, infer TEnum, infer TCustomType>
+        ? // First check if custom type is set (from $type<T>())
+          [TCustomType] extends [never]
+            ? // No custom type, check if it's an enum
+              [TEnum] extends [never]
+                ? // Not an enum, use ColumnValueTypes
+                  TNotNull extends true
+                    ? ColumnValueTypes<TType, TMode> // Non-nullable
+                    : ColumnValueTypes<TType, TMode> | null // Nullable
+                : // Enum type
+                  TNotNull extends true
+                    ? TEnum[number]
+                    : TEnum[number] | null
+            : // Custom type is set
+              TNotNull extends true
+                ? TCustomType
+                : TCustomType | null
+        : never
+
+export type InferInsertModel<T extends AnyTable> = {
+    [K in RequiredColumns<T['_']['columns']>]: ExtractInsertColumnType<T['_']['columns'][K]>
+} & {
+    [K in OptionalColumns<T['_']['columns']>]?: ExtractInsertColumnType<T['_']['columns'][K]>
+}
+
+export class Table<TColumns extends Record<string, AnySQLiteColumn>, TTableName extends string> {
+    _: {
+        name: TTableName
+        columns: TColumns
+    }
+    relations: Record<string, RelationConfig> = {}
+
+    constructor(name: TTableName, columns: TColumns) {
+        this._ = {
+            name,
+            columns,
+        }
+    }
+}
+
+export const sqliteTable = <TTableName extends string, TColumns extends Record<string, AnySQLiteColumn>>(
+    tableName: TTableName,
+    columns: TColumns
+): Table<TColumns, TTableName> => {
+    const table = new Table(tableName, columns)
+    // Attach table to columns so references(() => table._.columns.id) can resolve table name
+    for (const col of Object.values(columns)) {
+        (col as any).__table = table
+    }
+    return table
+}
+
+// Kysely-based type aliases — kept for API surface compatibility
+export type SQLCondition = Expression<SqlBool>
+export type SQLAggregate<T = number> = Expression<T>
+export type SQLSubquery = Expression<any>
+
+export const asc = (column: AnySQLiteColumn): Expression<any> =>
+    kyselySql`${kyselySql.ref(column._.name)} ASC`
+
+export const desc = (column: AnySQLiteColumn): Expression<any> =>
+    kyselySql`${kyselySql.ref(column._.name)} DESC`
+
+// Main ORM Class
 export class TauriORM {
-  // Soft relational query API: db.query.users.findMany({ with: { posts: true } })
-  query: Record<string, any> = {};
-  private _tables: Record<string, Table<any>> | null = null;
-  private _relations: Record<string, Record<string, RelationConfig>> | null =
-    null;
+    private tables: Map<string, AnyTable> = new Map()
+    private kysely: Kysely<any>
 
-  // Deprecated: use configure()
-  configureQuery(
-    tables: Record<string, Table<any>>,
-    relations: Record<string, Record<string, RelationConfig>>
-  ): void {
-    this.configure(tables, relations);
-  }
-  select<T>(fields?: Record<string, Column<any>>): SelectQueryBuilder<T> {
-    return new SelectQueryBuilder<T>(fields);
-  }
+    constructor(
+        private db: DatabaseLike,
+        schema: Record<string, AnyTable | Record<string, Relation>> | undefined = undefined
+    ) {
+        this.kysely = new Kysely({ dialect: new TauriDialect(db) })
 
-  // --- Drizzle-style CRUD builders ---
-  insert(table: Table<any>) {
-    return new (class InsertBuilder {
-      _table = table;
-      _rows: Record<string, any>[] = [];
-      values(rowOrRows: Record<string, any> | Record<string, any>[]) {
-        this._rows = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
-        return this;
-      }
-      async execute() {
-        const db = getDb();
-        for (const data of this._rows) {
-          const finalData: Record<string, any> = { ...data };
-          const schema = (this._table as any)._schema as Record<
-            string,
-            Column<any>
-          >;
-          for (const [key, col] of Object.entries(schema)) {
-            if (finalData[key] === undefined && (col as any).defaultFn) {
-              finalData[key] = (col as any).defaultFn!();
-            }
-          }
-          const keys = Object.keys(finalData);
-          const values = Object.values(finalData);
-          const placeholders = values.map(() => "?").join(", ");
-          const query = `INSERT INTO ${this._table._tableName} (${keys.join(
-            ", "
-          )}) VALUES (${placeholders})`;
-          await db.execute(query, values);
-        }
-      }
-    })();
-  }
-
-  update(table: Table<any>) {
-    return new (class UpdateBuilder {
-      _table = table;
-      _data: Record<string, any> | null = null;
-      _where: Record<string, any> | SQL | null = null;
-      set(data: Record<string, any>) {
-        this._data = data;
-        return this;
-      }
-      where(cond: Record<string, any> | SQL) {
-        this._where = cond;
-        return this;
-      }
-      async execute() {
-        if (!this._data)
-          throw new Error("Update requires set() before execute()");
-        const db = getDb();
-        const setKeys = Object.keys(this._data);
-        const setClause = setKeys.map((k) => `${k} = ?`).join(", ");
-        const bindings: any[] = Object.values(this._data);
-        let query = `UPDATE ${this._table._tableName} SET ${setClause}`;
-        if (this._where) {
-          if (typeof (this._where as any).toSQL === "function") {
-            const sql = (this._where as SQL).toSQL();
-            query += ` WHERE ${sql.clause}`;
-            bindings.push(...sql.bindings);
-          } else {
-            const entries = Object.entries(this._where as Record<string, any>);
-            if (entries.length > 0) {
-              query += ` WHERE ${entries
-                .map(([k]) => `${k} = ?`)
-                .join(" AND ")}`;
-              bindings.push(...entries.map(([, v]) => v));
-            }
-          }
-        }
-        await db.execute(query, bindings);
-      }
-    })();
-  }
-
-  delete(table: Table<any>) {
-    return new (class DeleteBuilder {
-      _table = table;
-      _where: Record<string, any> | SQL | null = null;
-      where(cond: Record<string, any> | SQL) {
-        this._where = cond;
-        return this;
-      }
-      async execute() {
-        const db = getDb();
-        let query = `DELETE FROM ${this._table._tableName}`;
-        const bindings: any[] = [];
-        if (this._where) {
-          if (typeof (this._where as any).toSQL === "function") {
-            const sql = (this._where as SQL).toSQL();
-            query += ` WHERE ${sql.clause}`;
-            bindings.push(...sql.bindings);
-          } else {
-            const entries = Object.entries(this._where as Record<string, any>);
-            if (entries.length > 0) {
-              query += ` WHERE ${entries
-                .map(([k]) => `${k} = ?`)
-                .join(" AND ")}`;
-              bindings.push(...entries.map(([, v]) => v));
-            }
-          }
-        }
-        await db.execute(query, bindings);
-      }
-    })();
-  }
-
-  // legacy direct methods removed in favor of builder APIs
-
-  // legacy direct methods removed in favor of builder APIs
-
-  // legacy direct methods removed in favor of builder APIs
-
-  async run(query: string, bindings: any[] = []): Promise<void> {
-    const db = getDb();
-    await db.execute(query, bindings);
-  }
-
-  // --- Migrations API ---
-
-  private generateCreateTableSql(table: Table<any>): string {
-    const tableName = table._tableName;
-    const columns: Column<any>[] = Object.values(table._schema);
-    const columnDefs = columns.map((col) => {
-      let def = `${col.name} ${col.type}`;
-      if (col.isPrimaryKey) {
-        def += col.autoIncrement
-          ? " PRIMARY KEY AUTOINCREMENT"
-          : " PRIMARY KEY";
-      }
-      if (col.isNotNull) def += " NOT NULL";
-      if (col.defaultValue !== undefined) {
-        const dv: any = col.defaultValue as any;
-        if (dv && typeof dv === "object" && "raw" in dv) {
-          def += ` DEFAULT ${dv.raw}`;
-        } else if (typeof dv === "string") {
-          def += ` DEFAULT '${dv.replace(/'/g, "''")}'`;
-        } else {
-          def += ` DEFAULT ${dv}`;
-        }
-      }
-      // defaultFn is applied at insert-time; not encoded in DDL
-      if (col.references && !col.isPrimaryKey) {
-        def += ` REFERENCES ${col.references.table} (${col.references.column})`;
-        if (col.references.onDelete)
-          def += ` ON DELETE ${col.references.onDelete.toUpperCase()}`;
-        if (col.references.onUpdate)
-          def += ` ON UPDATE ${col.references.onUpdate.toUpperCase()}`;
-      }
-      return def;
-    });
-    return `CREATE TABLE IF NOT EXISTS ${tableName} (${columnDefs.join(
-      ", "
-    )});`;
-  }
-
-  async createTableIfNotExists(table: Table<any>): Promise<void> {
-    const sql = this.generateCreateTableSql(table);
-    await this.run(sql);
-  }
-
-  async createTablesIfNotExist(tables: Table<any>[]): Promise<void> {
-    for (const t of tables) {
-      await this.createTableIfNotExists(t);
-    }
-  }
-
-  private async ensureMigrationsTable(): Promise<void> {
-    await this.run(
-      `CREATE TABLE IF NOT EXISTS _migrations (name TEXT PRIMARY KEY, applied_at INTEGER NOT NULL)`
-    );
-  }
-
-  private async hasMigration(name: string): Promise<boolean> {
-    const db = getDb();
-    const rows = await db.select<any[]>(
-      `SELECT name FROM _migrations WHERE name = ?`,
-      [name]
-    );
-    return Array.isArray(rows) && rows.length > 0;
-  }
-
-  private async recordMigration(name: string): Promise<void> {
-    const db = getDb();
-    await db.execute(
-      `INSERT INTO _migrations (name, applied_at) VALUES (?, ?)`,
-      [name, Date.now()]
-    );
-  }
-
-  async migrate(
-    tables: Table<any>[],
-    options?: { name?: string; track?: boolean }
-  ): Promise<void> {
-    const track = options?.track ?? true;
-    if (track) {
-      await this.ensureMigrationsTable();
-      const name =
-        options?.name ?? `init:${tables.map((t) => t._tableName).join(",")}`;
-      const already = await this.hasMigration(name);
-      if (already) return;
-      await this.createTablesIfNotExist(tables);
-      await this.recordMigration(name);
-      return;
-    }
-    await this.createTablesIfNotExist(tables);
-  }
-
-  // Configure schema and relations, and generate db.query automatically
-  configure(
-    tables: Record<string, Table<any>>,
-    relDefs?: Record<string, Record<string, RelationConfig>>
-  ) {
-    this._tables = tables;
-    this._relations = relDefs ?? {};
-    this.query = makeQueryAPI(tables, this._relations);
-    return this;
-  }
-
-  // Convenience: migrate from configured tables
-  async migrateConfigured(options?: { name?: string; track?: boolean }) {
-    if (!this._tables)
-      throw new Error("No tables configured. Call db.configure({...}) first.");
-    await this.migrate(Object.values(this._tables), options);
-  }
-}
-
-// Export a singleton instance for easy use
-export const db = new TauriORM();
-
-// --- Soft relations API ---
-
-type OneConfig = {
-  fields?: Column[];
-  references?: Column[];
-  relationName?: string;
-};
-
-type ManyConfig = {
-  relationName?: string;
-};
-
-type RelationBuilderCtx = {
-  one: (table: Table<any>, cfg?: OneConfig) => OneRelation;
-  many: (table: Table<any>, cfg?: ManyConfig) => ManyRelation;
-};
-
-export type OneRelation = { kind: "one"; table: Table<any>; cfg?: OneConfig };
-export type ManyRelation = {
-  kind: "many";
-  table: Table<any>;
-  cfg?: ManyConfig;
-};
-
-export function relations(
-  baseTable: Table<any>,
-  builder: (
-    ctx: RelationBuilderCtx
-  ) => Record<string, OneRelation | ManyRelation>
-) {
-  const ctx: RelationBuilderCtx = {
-    one: (table, cfg) => ({ kind: "one", table, cfg }),
-    many: (table, cfg) => ({ kind: "many", table, cfg }),
-  };
-  const rels = builder(ctx);
-  return rels;
-}
-
-type RelationConfig = OneRelation | ManyRelation;
-
-// With-spec for nested relational queries and selective columns
-type WithSpec = Record<
-  string,
-  boolean | { with?: WithSpec; columns?: string[] }
->;
-
-function getPrimaryKey(table: Table<any>): Column<any> {
-  const cols: Column[] = Object.values(table._schema);
-  return (
-    cols.find((c) => c.isPrimaryKey) ||
-    cols.find((c) => c.name === "id") ||
-    cols[0]
-  );
-}
-
-function guessChildFk(
-  child: Table<any>,
-  base: Table<any>,
-  rel?: RelationConfig
-): Column<any> | null {
-  const childCols: Column[] = Object.values(child._schema);
-  if (rel && rel.kind === "one" && rel.cfg?.fields?.[0])
-    return rel.cfg.fields[0];
-  const basePk = getPrimaryKey(base);
-  const guessNames = [
-    `${base._tableName}_id`,
-    `${base._tableName}Id`,
-    `${basePk.name}`,
-    `${base._tableName.slice(0, -1)}Id`,
-  ];
-  return (
-    childCols.find((c) => guessNames.includes(c.name)) ||
-    childCols.find((c) => /.*_id$/i.test(c.name)) ||
-    null
-  );
-}
-
-function isFlatWith(spec: WithSpec): boolean {
-  return Object.values(spec).every((v) => typeof v === "boolean");
-}
-
-// Eager loading using simple N+1 strategy for now
-export function makeQueryAPI(
-  tables: Record<string, Table<any>>,
-  relDefs: Record<string, Record<string, RelationConfig>>
-) {
-  const api: any = {};
-  const tableKeyByName: Record<string, string> = {};
-  for (const [k, t] of Object.entries(tables)) tableKeyByName[t._tableName] = k;
-  for (const [tblKey, tbl] of Object.entries(tables)) {
-    api[tblKey] = {
-      async findMany(opts?: {
-        with?: WithSpec;
-        join?: boolean;
-        columns?: string[] | Record<string, boolean>;
-        where?: SQL | Record<string, any>;
-        orderBy?: string[];
-        limit?: number;
-        offset?: number;
-      }) {
-        const base = tbl;
-        const withSpec = (opts?.with as WithSpec) ?? {};
-        const dbi = getDb();
-
-        const rels = relDefs[tblKey] ?? {};
-
-        if (opts?.join && isFlatWith(withSpec)) {
-          const baseCols: Column[] = Object.values(base._schema);
-          const basePk =
-            baseCols.find((c) => c.isPrimaryKey) ||
-            baseCols.find((c) => c.name === "id") ||
-            baseCols[0];
-
-          const selectParts: string[] = [];
-          let baseSelected: string[];
-          if (opts?.columns && !Array.isArray(opts.columns)) {
-            baseSelected = Object.entries(opts.columns)
-              .filter(([, v]) => !!v)
-              .map(([k]) => k);
-          } else if (
-            Array.isArray(opts?.columns) &&
-            (opts!.columns as string[]).length > 0
-          ) {
-            baseSelected = opts!.columns as string[];
-          } else {
-            baseSelected = baseCols.map((c) => c.name);
-          }
-          for (const name of baseSelected)
-            selectParts.push(`${base._tableName}.${name} AS __base_${name}`);
-
-          const joins: string[] = [];
-          const relColsMap: Record<string, string[]> = {};
-          const fkMap: Record<
-            string,
-            { childFk: Column<any>; childPk: Column<any> | null }
-          > = {};
-
-          for (const [relName, enabled] of Object.entries(withSpec)) {
-            if (!enabled) continue;
-            const rel = rels[relName];
-            if (!rel) continue;
-            const child = rel.table;
-            const childCols: Column[] = Object.values(child._schema);
-            const childPk =
-              childCols.find((c) => c.isPrimaryKey) ||
-              childCols.find((c) => c.name === "id") ||
-              null;
-            const childFk = guessChildFk(child, base, rel);
-            if (!childFk) continue;
-            fkMap[relName] = { childFk, childPk };
-            const selected =
-              typeof enabled === "object" && (enabled as any).columns?.length
-                ? (enabled as any).columns!
-                : childCols.map((c) => c.name);
-            relColsMap[relName] = selected;
-            for (const name of selected)
-              selectParts.push(
-                `${child._tableName}.${name} AS __rel_${relName}_${name}`
-              );
-            joins.push(
-              `LEFT JOIN ${child._tableName} ON ${child._tableName}.${childFk.name} = ${base._tableName}.${basePk.name}`
-            );
-          }
-
-          let sqlText = `SELECT ${selectParts.join(", ")} FROM ${
-            base._tableName
-          }${joins.length ? " " + joins.join(" ") : ""}`;
-          const bindings: any[] = [];
-          if (opts?.where) {
-            if (typeof (opts.where as any).toSQL === "function") {
-              const w = (opts.where as SQL).toSQL();
-              sqlText += ` WHERE ${w.clause}`;
-              bindings.push(...w.bindings);
-            } else {
-              const entries = Object.entries(opts.where as Record<string, any>);
-              if (entries.length > 0) {
-                sqlText += ` WHERE ${entries
-                  .map(([k]) => `${base._tableName}.${k} = ?`)
-                  .join(" AND ")}`;
-                bindings.push(...entries.map(([, v]) => v));
-              }
-            }
-          }
-          if (opts?.orderBy?.length)
-            sqlText += ` ORDER BY ${opts.orderBy.join(", ")}`;
-          if (typeof opts?.limit === "number")
-            sqlText += ` LIMIT ${opts.limit}`;
-          if (typeof opts?.offset === "number")
-            sqlText += ` OFFSET ${opts.offset}`;
-          const rows = await dbi.select<any[]>(sqlText, bindings);
-
-          const groups = new Map<any, any>();
-          for (const row of rows) {
-            const baseObj: any = {};
-            for (const name of baseSelected)
-              baseObj[name] = row[`__base_${name}`];
-            const baseKey = baseObj[basePk.name];
-            if (!groups.has(baseKey)) {
-              const seed: any = { ...baseObj };
-              for (const [relName, enabled] of Object.entries(withSpec)) {
-                if (!enabled) continue;
-                const rel = rels[relName];
-                if (!rel) continue;
-                seed[relName] = rel.kind === "many" ? [] : null;
-              }
-              groups.set(baseKey, seed);
-            }
-            const acc = groups.get(baseKey);
-            for (const [relName, enabled] of Object.entries(withSpec)) {
-              if (!enabled) continue;
-              const rel = rels[relName];
-              if (!rel) continue;
-              const childCols = relColsMap[relName];
-              const childObj: any = {};
-              let allNull = true;
-              for (const name of childCols) {
-                const v = row[`__rel_${relName}_${name}`];
-                childObj[name] = v;
-                if (v !== null && v !== undefined) allNull = false;
-              }
-              if (allNull) continue;
-              if (rel.kind === "many") {
-                const childPk = fkMap[relName].childPk;
-                if (childPk) {
-                  if (!acc[relName]) acc[relName] = [];
-                  const exists = acc[relName].some(
-                    (r: any) => r[childPk!.name] === childObj[childPk!.name]
-                  );
-                  if (!exists) acc[relName].push(childObj);
-                } else {
-                  acc[relName].push(childObj);
+        if (schema) {
+            for (const [, value] of Object.entries(schema)) {
+                if (value instanceof Table) {
+                    this.tables.set(value._.name, value)
                 }
-              } else {
-                acc[relName] = childObj;
-              }
             }
-          }
-          return Array.from(groups.values());
+        }
+    }
+
+    private buildColumnDefinition(col: AnySQLiteColumn, forAlterTable: boolean = false): string {
+        let sql = `${col._.name} ${col.type}`
+        if (col.options.primaryKey && !forAlterTable) {
+            sql += ' PRIMARY KEY'
+            if (col._.autoincrement) {
+                sql += ' AUTOINCREMENT'
+            }
+        }
+        if (col._.notNull) sql += ' NOT NULL'
+        if (col.options.unique) sql += ' UNIQUE'
+        if (col.options.default !== undefined) {
+            const value = col.options.default
+            sql += ` DEFAULT ${typeof value === 'string' ? `'${value.replace(/'/g, "''")}'` : value}`
+        }
+        if (col.options.references) {
+            const ref = 'getRef' in col.options.references ? col.options.references.getRef() : col.options.references
+            sql += ` REFERENCES ${ref.table._.name}(${ref.column._.name})`
+            const opts = col.options.references
+            if (opts.onDelete) sql += ` ON DELETE ${opts.onDelete.toUpperCase()}`
+            if (opts.onUpdate) sql += ` ON UPDATE ${opts.onUpdate.toUpperCase()}`
+        }
+        return sql
+    }
+
+    async checkMigration(): Promise<{
+        safe: boolean
+        changes: {
+            tablesToCreate: string[]
+            tablesToRecreate: string[]
+            tablesToDrop: string[]
+            columnsToAdd: Array<{ table: string; column: string }>
+        }
+    }> {
+        const dbTables = await this.db.select<{ name: string }[]>(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+        )
+        const dbTableNames = new Set(dbTables.map((t) => t.name))
+        const schemaTableNames = new Set(Array.from(this.tables.keys()))
+
+        const changes = {
+            tablesToCreate: [] as string[],
+            tablesToRecreate: [] as string[],
+            tablesToDrop: [] as string[],
+            columnsToAdd: [] as Array<{ table: string; column: string }>,
         }
 
-        // Recursive nested loading when join is off or spec is nested
-        let baseSelected: string[];
-        if (opts?.columns && !Array.isArray(opts.columns)) {
-          baseSelected = Object.entries(opts.columns)
-            .filter(([, v]) => !!v)
-            .map(([k]) => k);
-        } else if (
-          Array.isArray(opts?.columns) &&
-          (opts!.columns as string[]).length > 0
-        ) {
-          baseSelected = opts!.columns as string[];
-        } else {
-          baseSelected = (Object.values(base._schema) as Column<any>[]).map(
-            (c) => c.name
-          );
-        }
-        let baseSql = `SELECT ${baseSelected.join(", ")} FROM ${
-          base._tableName
-        }`;
-        const baseBindings: any[] = [];
-        if (opts?.where) {
-          if (typeof (opts.where as any).toSQL === "function") {
-            const w = (opts.where as SQL).toSQL();
-            baseSql += ` WHERE ${w.clause}`;
-            baseBindings.push(...w.bindings);
-          } else {
-            const entries = Object.entries(opts.where as Record<string, any>);
-            if (entries.length > 0) {
-              baseSql += ` WHERE ${entries
-                .map(([k]) => `${k} = ?`)
-                .join(" AND ")}`;
-              baseBindings.push(...entries.map(([, v]) => v));
+        // Check tables to create
+        for (const tableName of schemaTableNames) {
+            if (!dbTableNames.has(tableName)) {
+                changes.tablesToCreate.push(tableName)
             }
-          }
         }
-        if (opts?.orderBy?.length)
-          baseSql += ` ORDER BY ${opts.orderBy.join(", ")}`;
-        if (typeof opts?.limit === "number") baseSql += ` LIMIT ${opts.limit}`;
-        if (typeof opts?.offset === "number")
-          baseSql += ` OFFSET ${opts.offset}`;
-        const baseRows = await dbi.select<any[]>(baseSql, baseBindings);
-        const result = baseRows.map((r) => ({ ...r }));
-        async function loadRelationsFor(
-          parents: any[],
-          parentTable: Table<any>,
-          spec: WithSpec
-        ) {
-          const parentPk = getPrimaryKey(parentTable);
-          const parentIds = parents.map((p) => p[parentPk.name]);
-          const relsMap =
-            relDefs[
-              Object.keys(tables).find(
-                (k) => tables[k]._tableName === parentTable._tableName
-              )!
-            ] || {};
-          for (const [relName, v] of Object.entries(spec)) {
-            const enabled = v as any;
-            const rel = relsMap[relName];
-            if (!rel) continue;
-            const child = rel.table;
-            const childCols: Column[] = Object.values(child._schema);
-            const selectCols =
-              enabled?.columns && enabled.columns.length > 0
-                ? enabled.columns
-                : childCols.map((c) => c.name);
-            const fkCol = guessChildFk(child, parentTable, rel);
-            if (!fkCol) continue;
-            if (rel.kind === "many") {
-              const sql = `SELECT ${selectCols.join(", ")} FROM ${
-                child._tableName
-              } WHERE ${fkCol.name} IN (${parentIds
-                .map(() => "?")
-                .join(", ")})`;
-              const rows = await dbi.select<any[]>(sql, parentIds);
-              const buckets = new Map<any, any[]>();
-              for (const r of rows) {
-                const key = r[fkCol.name];
-                if (!buckets.has(key)) buckets.set(key, []);
-                buckets.get(key)!.push(r);
-              }
-              for (const p of parents)
-                (p as any)[relName] = buckets.get(p[parentPk.name]) ?? [];
-              if (enabled?.with) {
-                const children = parents.flatMap(
-                  (p) => (p as any)[relName] as any[]
-                );
-                if (children.length > 0)
-                  await loadRelationsFor(children, child, enabled.with);
-              }
+
+        // Check tables to drop
+        for (const tableName of dbTableNames) {
+            if (!schemaTableNames.has(tableName)) {
+                changes.tablesToDrop.push(tableName)
+            }
+        }
+
+        // Check for table recreation and column additions
+        for (const table of this.tables.values()) {
+            const tableName = table._.name
+            if (!dbTableNames.has(tableName)) continue
+
+            const existingTableInfo = await this.db.select<Array<{
+                name: string
+                type: string
+                notnull: number
+                dflt_value: any
+                pk: number
+            }>>(`PRAGMA table_info('${tableName}')`)
+
+            const existingIndexes = await this.db.select<Array<{
+                name: string
+                unique: number
+                origin: string
+            }>>(`PRAGMA index_list('${tableName}')`)
+
+            const uniqueColumns = new Set<string>()
+            for (const index of existingIndexes) {
+                if (index.unique === 1 && index.origin === 'u') {
+                    const indexInfo = await this.db.select<Array<{ name: string }>>(`PRAGMA index_info('${index.name}')`)
+                    if (indexInfo.length === 1) {
+                        uniqueColumns.add(indexInfo[0].name)
+                    }
+                }
+            }
+
+            const existingColumns = new Map(existingTableInfo.map(c => [c.name, c]))
+            const schemaColumns = table._.columns
+
+            let needsRecreate = false
+
+            for (const [colName, column] of Object.entries(schemaColumns)) {
+                const dbColName = column._.name
+                const existing = existingColumns.get(dbColName)
+
+                if (!existing) {
+                    if (!this.canAddColumnWithAlter(column)) {
+                        needsRecreate = true
+                        break
+                    }
+                    changes.columnsToAdd.push({ table: tableName, column: dbColName })
+                } else {
+                    const hasUniqueInDB = uniqueColumns.has(dbColName)
+                    const wantsUnique = !!column.options.unique
+
+                    if (hasUniqueInDB !== wantsUnique || this.hasColumnDefinitionChanged(column, existing)) {
+                        needsRecreate = true
+                        break
+                    }
+                }
+            }
+
+            // Check for removed columns (existingCol is DB name)
+            for (const existingCol of existingColumns.keys()) {
+                const schemaHasCol = Object.values(schemaColumns).some((c) => c._.name === existingCol)
+                if (!schemaHasCol) {
+                    needsRecreate = true
+                    break
+                }
+            }
+
+            if (needsRecreate) {
+                changes.tablesToRecreate.push(tableName)
+            }
+        }
+
+        const safe = changes.tablesToRecreate.length === 0 && changes.tablesToDrop.length === 0
+
+        return { safe, changes }
+    }
+
+    async migrate(options?: { 
+        performDestructiveActions?: boolean
+        dryRun?: boolean
+    }): Promise<void> {
+        if (options?.dryRun) {
+            const check = await this.checkMigration()
+            console.log('[Tauri-ORM] Migration Preview (Dry Run):')
+            console.log('  Tables to create:', check.changes.tablesToCreate)
+            console.log('  Tables to recreate (DESTRUCTIVE):', check.changes.tablesToRecreate)
+            console.log('  Tables to drop:', check.changes.tablesToDrop)
+            console.log('  Columns to add:', check.changes.columnsToAdd)
+            console.log('  Safe migration:', check.safe)
+            return
+        }
+        const dbTables = await this.db.select<{ name: string }[]>(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'`
+        )
+        const dbTableNames = new Set(dbTables.map((t) => t.name))
+        const schemaTableNames = new Set(Array.from(this.tables.keys()))
+
+        // Create/update tables
+        for (const table of this.tables.values()) {
+            const tableName = table._.name
+            const tableExists = dbTableNames.has(tableName)
+
+            if (!tableExists) {
+                // Table does not exist, create it
+                const columnsSql = Object.values(table._.columns)
+                    .map((col) => this.buildColumnDefinition(col))
+                    .join(', ')
+                const createSql = `CREATE TABLE ${tableName} (${columnsSql})`
+                await this.db.execute(createSql)
             } else {
-              const sql = `SELECT ${selectCols.join(", ")} FROM ${
-                child._tableName
-              } WHERE ${fkCol.name} IN (${parentIds
-                .map(() => "?")
-                .join(", ")})`;
-              const rows = await dbi.select<any[]>(sql, parentIds);
-              const mapOne = new Map<any, any>();
-              for (const r of rows) mapOne.set(r[fkCol.name], r);
-              for (const p of parents)
-                (p as any)[relName] = mapOne.get(p[parentPk.name]) ?? null;
-              if (enabled?.with) {
-                const children = parents
-                  .map((p) => (p as any)[relName])
-                  .filter(Boolean);
-                if (children.length > 0)
-                  await loadRelationsFor(children, child, enabled.with);
-              }
+                // Table exists, check for schema changes
+                const existingTableInfo = await this.db.select<Array<{
+                    name: string
+                    type: string
+                    notnull: number
+                    dflt_value: any
+                    pk: number
+                }>>(`PRAGMA table_info('${tableName}')`)
+                
+                // Get existing UNIQUE constraints from indexes
+                const existingIndexes = await this.db.select<Array<{
+                    name: string
+                    unique: number
+                    origin: string
+                }>>(`PRAGMA index_list('${tableName}')`)
+                
+                const uniqueColumns = new Set<string>()
+                for (const index of existingIndexes) {
+                    if (index.unique === 1 && index.origin === 'u') {
+                        const indexInfo = await this.db.select<Array<{ name: string }>>(`PRAGMA index_info('${index.name}')`)
+                        if (indexInfo.length === 1) {
+                            uniqueColumns.add(indexInfo[0].name)
+                        }
+                    }
+                }
+                
+                const existingColumns = new Map(existingTableInfo.map(c => [c.name, c]))
+                const schemaColumns = table._.columns
+                
+                // Check if we need to recreate the table (column definition changes)
+                let needsRecreate = false
+                const columnsToAdd: AnySQLiteColumn[] = []
+                
+                for (const [colName, column] of Object.entries(schemaColumns)) {
+                    const dbColName = column._.name
+                    const existing = existingColumns.get(dbColName)
+                    
+                    if (!existing) {
+                        // New column - check if it can be added with ALTER TABLE
+                        if (this.canAddColumnWithAlter(column)) {
+                            columnsToAdd.push(column)
+                        } else {
+                            needsRecreate = true
+                            break
+                        }
+                    } else {
+                        // Existing column - check if definition changed
+                        const hasUniqueInDB = uniqueColumns.has(dbColName)
+                        const wantsUnique = !!column.options.unique
+                        
+                        if (hasUniqueInDB !== wantsUnique) {
+                            needsRecreate = true
+                            break
+                        }
+                        
+                        if (this.hasColumnDefinitionChanged(column, existing)) {
+                            needsRecreate = true
+                            break
+                        }
+                    }
+                }
+                
+                // Check for removed columns (existingCol is DB name)
+                if (options?.performDestructiveActions) {
+                    for (const existingCol of existingColumns.keys()) {
+                        const schemaHasCol = Object.values(schemaColumns).some((c) => c._.name === existingCol)
+                        if (!schemaHasCol) {
+                            needsRecreate = true
+                            break
+                        }
+                    }
+                }
+                
+                if (needsRecreate) {
+                    // Recreate table with new schema
+                    await this.recreateTable(tableName, table)
+                } else if (columnsToAdd.length > 0) {
+                    // Just add new columns with ALTER TABLE
+                    for (const column of columnsToAdd) {
+                        const columnSql = this.buildColumnDefinition(column, true)
+                        await this.db.execute(`ALTER TABLE ${tableName} ADD COLUMN ${columnSql}`)
+                    }
+                }
             }
-          }
         }
 
-        if (Object.keys(withSpec).length > 0) {
-          await loadRelationsFor(result, base, withSpec);
+        // Drop extra tables if destructive actions are enabled
+        if (options?.performDestructiveActions) {
+            for (const tableName of dbTableNames) {
+                if (!schemaTableNames.has(tableName)) {
+                    await this.dropTable(tableName)
+                }
+            }
         }
-        return result as any[];
-      },
-    };
-  }
+    }
+    
+    private canAddColumnWithAlter(column: AnySQLiteColumn): boolean {
+        // SQLite ALTER TABLE ADD COLUMN has limitations:
+        // - Cannot add PRIMARY KEY
+        // - Cannot add UNIQUE (without using a workaround)
+        // - Can add NOT NULL only if column has a DEFAULT value
+        if (column.options.primaryKey) return false
+        if (column.options.unique) return false
+        if (column._.notNull && column.options.default === undefined && !column.options.$defaultFn) return false
+        return true
+    }
+    
+    private hasColumnDefinitionChanged(column: AnySQLiteColumn, existing: {
+        name: string
+        type: string
+        notnull: number
+        dflt_value: any
+        pk: number
+    }): boolean {
+        // Check if column type changed (normalize to uppercase)
+        if (column.type.toUpperCase() !== existing.type.toUpperCase()) return true
+        
+        // Check if NOT NULL changed
+        if (column._.notNull !== (existing.notnull === 1)) return true
+        
+        // Check if PRIMARY KEY changed
+        if (!!column.options.primaryKey !== (existing.pk === 1)) return true
+        
+        // Check if default value changed
+        const hasDefault = column.options.default !== undefined
+        const existingHasDefault = existing.dflt_value !== null
+        if (hasDefault !== existingHasDefault) return true
+        
+        // Check UNIQUE constraint (requires checking indexes)
+        // For now, we'll check UNIQUE separately if needed
+        
+        return false
+    }
+    
+    private async recreateTable(tableName: string, table: AnyTable): Promise<void> {
+        const tempTableName = `${tableName}_new_${Date.now()}`
+        
+        // Create new table with updated schema
+        const columnsSql = Object.values(table._.columns)
+            .map((col) => this.buildColumnDefinition(col))
+            .join(', ')
+        await this.db.execute(`CREATE TABLE ${tempTableName} (${columnsSql})`)
+        
+        // Copy data from old table (only columns that exist in both)
+        const oldColumns = await this.db.select<Array<{ name: string }>>(`PRAGMA table_info('${tableName}')`)
+        const oldColumnNames = oldColumns.map(c => c.name)
+        const newColumnNames = Object.values(table._.columns).map(c => c._.name)
+        const commonColumns = oldColumnNames.filter(name => newColumnNames.includes(name))
+        
+        if (commonColumns.length > 0) {
+            const columnsList = commonColumns.join(', ')
+            await this.db.execute(
+                `INSERT INTO ${tempTableName} (${columnsList}) SELECT ${columnsList} FROM ${tableName}`
+            )
+        }
+        
+        // Drop old table and rename new table
+        await this.db.execute(`DROP TABLE ${tableName}`)
+        await this.db.execute(`ALTER TABLE ${tempTableName} RENAME TO ${tableName}`)
+    }
 
-  return api as {
-    [K in keyof typeof tables]: {
-      findMany: (opts?: {
-        with?: WithSpec;
-        join?: boolean;
-        columns?: string[];
-      }) => Promise<any[]>;
-    };
-  };
+    select<T extends AnyTable, C extends (keyof T['_']['columns'])[] | undefined = undefined>(
+        table: T,
+        columns?: C
+    ): SelectQueryBuilder<T, C> {
+        const internalTable = this.tables.get(table._.name)
+        if (!internalTable) {
+            console.warn(
+                `[Tauri-ORM] Table "${table._.name}" was not passed in the schema to the ORM constructor. Relations will not be available.`
+            )
+            return new SelectQueryBuilder(this.kysely, table, columns)
+        }
+        return new SelectQueryBuilder(this.kysely, internalTable as T, columns)
+    }
+
+    insert<T extends AnyTable>(table: T): InsertQueryBuilder<T> {
+        return new InsertQueryBuilder(this.kysely, table)
+    }
+
+    update<T extends AnyTable>(table: T): UpdateQueryBuilder<T> {
+        return new UpdateQueryBuilder(this.kysely, table)
+    }
+
+    delete<T extends AnyTable>(table: T): DeleteQueryBuilder<T> {
+        return new DeleteQueryBuilder(this.kysely, table)
+    }
+
+    async upsert<T extends AnyTable>(
+        table: T,
+        data: InferInsertModel<T>,
+        conflictTarget: (keyof T['_']['columns'])[]
+    ): Promise<T extends AnyTable ? { lastInsertId: number; rowsAffected: number }[] : never> {
+        const columns = conflictTarget.map(col => table._.columns[col as string])
+        
+        return this.insert(table)
+            .values(data)
+            .onConflictDoUpdate({
+                target: columns.length === 1 ? columns[0] : columns,
+                set: data
+            })
+            .execute() as any
+    }
+
+    $with(alias: string): {
+        as: (query: SelectQueryBuilder<any, any>) => WithQueryBuilder
+    } {
+        const withBuilder = new WithQueryBuilder(this.kysely)
+        return {
+            as: (query: SelectQueryBuilder<any, any>) => {
+                withBuilder.with(alias, query)
+                return withBuilder
+            },
+        }
+    }
+
+    async transaction<T>(callback: (tx: TauriORM) => Promise<T>): Promise<T> {
+        await this.db.execute('BEGIN')
+        try {
+            const result = await callback(this)
+            await this.db.execute('COMMIT')
+            return result
+        } catch (e) {
+            await this.db.execute('ROLLBACK')
+            throw e
+        }
+    }
+
+    rollback(): never {
+        throw new Error('Transaction rolled back')
+    }
+
+    // --- Schema detection / signature ---
+    private async ensureSchemaMeta(): Promise<void> {
+        await this.db.execute(
+            `CREATE TABLE IF NOT EXISTS _schema_meta
+             (
+                 key
+                 TEXT
+                 PRIMARY
+                 KEY,
+                 value
+                 TEXT
+                 NOT
+                 NULL
+             )`
+        )
+    }
+
+    private async getSchemaMeta(key: string): Promise<string | null> {
+        await this.ensureSchemaMeta()
+        const rows = await this.db.select<any[]>(
+            `SELECT value
+             FROM _schema_meta
+             WHERE key = ?`,
+            [key]
+        )
+        return rows?.[0]?.value ?? null
+    }
+
+    private async setSchemaMeta(key: string, value: string): Promise<void> {
+        await this.ensureSchemaMeta()
+        await this.db.execute(
+            `INSERT INTO _schema_meta(key, value)
+             VALUES (?, ?) ON CONFLICT(key) DO
+             UPDATE
+             SET value = excluded.value`,
+            [key, value]
+        )
+    }
+
+    private normalizeColumn(col: AnySQLiteColumn): any {
+        return {
+            name: col._.name,
+            type: col.type,
+            pk: !!col.options.primaryKey,
+            ai: !!col._.autoincrement,
+            nn: !!col._.notNull,
+            unique: !!col.options.unique,
+            dv:
+                col.options.default && typeof col.options.default === 'object' && (col.options.default as any).raw
+                    ? { raw: (col.options.default as any).raw }
+                    : col.options.default ?? null,
+            hasDefaultFn: col.options.$defaultFn !== undefined,
+            hasOnUpdateFn: col.options.$onUpdateFn !== undefined,
+            onDelete: col.options.references?.onDelete ?? null,
+            onUpdate: col.options.references?.onUpdate ?? null,
+        }
+    }
+
+    private computeModelSignature(): string {
+        const entries = Array.from(this.tables.values()).map((tbl) => {
+            const cols = Object.values(tbl._.columns)
+                .map((c) => this.normalizeColumn(c))
+                .sort((a, b) => a.name.localeCompare(b.name))
+            return { table: tbl._.name, columns: cols }
+        })
+        entries.sort((a, b) => a.table.localeCompare(b.table))
+        return JSON.stringify(entries)
+    }
+
+    getSchemaSignature(): string {
+        return this.computeModelSignature()
+    }
+
+    async isSchemaDirty(): Promise<{
+        dirty: boolean
+        current: string
+        stored: string | null
+    }> {
+        const sig = this.computeModelSignature()
+        const stored = await this.getSchemaMeta('schema_signature')
+        return { dirty: sig !== stored, current: sig, stored }
+    }
+
+    async migrateIfDirty(): Promise<boolean> {
+        const status = await this.isSchemaDirty()
+        if (status.dirty) {
+            await this.migrate()
+            await this.setSchemaMeta('schema_signature', this.computeModelSignature())
+            return true
+        }
+        return false
+    }
+
+    async doesTableExist(tableName: string): Promise<boolean> {
+        const result = await this.db.select<{ name: string }[]>(
+            `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+            [tableName]
+        )
+        return result.length > 0
+    }
+
+    async dropTable(tableName: string): Promise<void> {
+        await this.db.execute(`DROP TABLE IF EXISTS ${tableName}`)
+    }
+
+    async doesColumnExist(tableName: string, columnName: string): Promise<boolean> {
+        const result = await this.db.select<{ name: string }[]>(`PRAGMA table_info('${tableName}')`)
+        return result.some((col) => col.name === columnName)
+    }
+
+    async renameTable(from: string, to: string): Promise<void> {
+        await this.db.execute(`ALTER TABLE ${from} RENAME TO ${to}`)
+    }
+
+    async dropColumn(tableName: string, columnName: string): Promise<void> {
+        await this.db.execute(`ALTER TABLE ${tableName} DROP COLUMN ${columnName}`)
+    }
+
+    async renameColumn(tableName: string, from: string, to: string): Promise<void> {
+        await this.db.execute(`ALTER TABLE ${tableName} RENAME COLUMN ${from} TO ${to}`)
+    }
+}
+
+// Relations
+export class Relation<T extends AnyTable = AnyTable> {
+    constructor(public foreignTable: T) {}
+}
+
+export class OneRelation<T extends AnyTable = AnyTable> extends Relation<T> {
+    constructor(
+        foreignTable: T,
+        public config?: {
+            fields: AnySQLiteColumn[]
+            references: AnySQLiteColumn[]
+            optional?: boolean
+            alias?: string
+        }
+    ) {
+        super(foreignTable)
+    }
+}
+
+export class ManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
+    constructor(
+        foreignTable: T,
+        public config?: {
+            from?: AnySQLiteColumn[]
+            to?: AnySQLiteColumn[]
+            through?: {
+                junctionTable: AnyTable
+                fromRef: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
+                toRef: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
+            }
+            optional?: boolean
+            alias?: string
+            where?: (alias: string) => unknown
+        }
+    ) {
+        super(foreignTable)
+    }
+}
+
+type InferRelations<R extends Record<string, Relation>> = {
+    [K in keyof R]: R[K] extends OneRelation<infer T>
+        ? { type: 'one'; foreignTable: T; fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
+        : R[K] extends ManyRelation<infer T>
+        ? { type: 'many'; foreignTable: T }
+        : never
+}
+
+export const relations = <T extends AnyTable, R extends Record<string, Relation>>(
+    table: T,
+    relationsCallback: (helpers: RelationsBuilder) => R
+): R => {
+    const builtRelations = relationsCallback({
+        one: <U extends AnyTable>(
+            foreignTable: U,
+            config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[]; optional?: boolean; alias?: string }
+        ) => {
+            return new OneRelation(foreignTable, config)
+        },
+        many: <U extends AnyTable>(foreignTable: U) => {
+            return new ManyRelation(foreignTable)
+        },
+    })
+
+    for (const [name, relation] of Object.entries(builtRelations)) {
+        if (relation instanceof OneRelation) {
+            table.relations[name] = {
+                type: 'one',
+                foreignTable: relation.foreignTable,
+                fields: relation.config?.fields,
+                references: relation.config?.references,
+                optional: relation.config?.optional,
+                alias: relation.config?.alias,
+            }
+        } else if (relation instanceof ManyRelation) {
+            table.relations[name] = {
+                type: 'many',
+                foreignTable: relation.foreignTable,
+            }
+        }
+    }
+
+    return builtRelations
+}
+
+// Helper functions
+export const getTableColumns = <T extends AnyTable>(table: T) => {
+    return table._.columns
+}
+
+export const alias = <T extends AnyTable>(table: T, alias: string): Table<T['_']['columns'], T['_']['name']> => {
+    // This is a placeholder for alias functionality
+    return table as any
 }

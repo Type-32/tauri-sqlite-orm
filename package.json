@@ -1,38 +1,43 @@
 {
-  "name": "@type32/tauri-sqlite-orm",
-  "version": "0.1.1",
-  "description": "A Drizzle-like ORM for Tauri v2's SQL JS API plugin.",
-  "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
-  "types": "./dist/index.d.ts",
-  "exports": {
-    ".": {
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+    "name": "@type32/tauri-sqlite-orm",
+    "version": "0.4.1-5",
+    "description": "A Drizzle-like ORM for Tauri v2's SQL JS API plugin.",
+    "main": "./dist/index.js",
+    "module": "./dist/index.mjs",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "import": "./dist/index.mjs",
+            "require": "./dist/index.js"
+        }
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsdown src/index.ts --format esm,cjs --dts",
+        "dev": "tsdown src/index.ts --format esm,cjs --dts --watch",
+        "test": "pnpm test",
+        "release:minor": "pnpm run build && pnpm pm version minor && pnpm publish",
+        "release:prerelease": "pnpm run build && pnpm pm version prerelease && pnpm publish",
+        "release:patch": "pnpm run build && pnpm pm version patch && pnpm publish",
+        "update-deps": "pnpm update --latest && pnpm add typescript@6.0.3 && pnpm approve-builds --all"
+    },
+    "keywords": [
+        "tauri",
+        "sqlite",
+        "orm",
+        "drizzle"
+    ],
+    "author": "Type-32",
+    "license": "MIT",
+    "devDependencies": {
+        "@types/node": "^26.6.3",
+        "tsdown": "0.22.14",
+        "typescript": "^6.0.3"
+    },
+    "dependencies": {
+        "@tauri-apps/plugin-sql": "^2.5.0",
+        "kysely": "^0.29.6"
     }
-  },
-  "files": [
-    "dist"
-  ],
-  "scripts": {
-    "build": "tsup src/index.ts --format esm,cjs --dts",
-    "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [
-    "tauri",
-    "sqlite",
-    "orm",
-    "drizzle"
-  ],
-  "author": "Type-32",
-  "license": "ISC",
-  "devDependencies": {
-    "@types/node": "^24.3.0",
-    "tsup": "^8.5.0",
-    "typescript": "^5.9.2"
-  },
-  "dependencies": {
-    "@tauri-apps/plugin-sql": "^2.3.0"
-  }
 }
