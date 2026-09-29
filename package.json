@@ -17,10 +17,10 @@
     "scripts": {
         "build": "tsup src/index.ts --format esm,cjs --dts",
         "dev": "tsup src/index.ts --format esm,cjs --dts --watch",
-        "test": "bun test",
-        "release:minor": "bun run build && bun pm version minor && bun publish",
-        "release:prerelease": "bun run build && bun pm version prerelease && bun publish",
-        "release:patch": "bun run build && bun pm version patch && bun publish"
+        "test": "pnpm test",
+        "release:minor": "pnpm run build && pnpm pm version minor && pnpm publish",
+        "release:prerelease": "pnpm run build && pnpm pm version prerelease && pnpm publish",
+        "release:patch": "pnpm run build && pnpm pm version patch && pnpm publish"
     },
     "keywords": [
         "tauri",
@@ -31,12 +31,12 @@
     "author": "Type-32",
     "license": "MIT",
     "devDependencies": {
-        "@types/node": "^25.4.0",
+        "@types/node": "^26.6.3",
         "tsup": "^8.5.1",
-        "typescript": "^5.9.3"
+        "typescript": "^6.0.3"
     },
     "dependencies": {
-        "@tauri-apps/plugin-sql": "^2.3.2",
-        "kysely": "^0.28.11"
+        "@tauri-apps/plugin-sql": "^2.5.0",
+        "kysely": "^0.29.6"
     }
 }
