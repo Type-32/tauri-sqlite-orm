@@ -14,7 +14,7 @@ import {
     integer,
     text,
     boolean,
-    relations,
+    defineRelations,
     TauriORM,
 } from '../../src/index'
 import { MockDatabase } from './mock-db'
@@ -211,96 +211,70 @@ export const userToPaper = sqliteTable('user_to_paper', {
         .references(() => paper._.columns.id),
 })
 
-// ─── Relations ──────────────────────────────────────────────────────────────
+// ─── Relations (v2 API) ──────────────────────────────────────────────────────
 
-export const userRelations = relations(user, ({ many }) => ({
-    sessions: many(session),
-    accounts: many(account),
-    usersToArticles: many(userToArticle),
-    usersToPapers: many(userToPaper),
+const schema = { user, session, account, article, userToArticle, volume, issue, paper, userToPaper }
+
+export const relations = defineRelations(schema, (r) => ({
+    user: {
+        sessions: r.many.session(),
+        accounts: r.many.account(),
+        usersToArticles: r.many.userToArticle(),
+        usersToPapers: r.many.userToPaper(),
+    },
+    session: {
+        user: r.one.user({ from: r.session.userId, to: r.user.id }),
+    },
+    account: {
+        user: r.one.user({ from: r.account.userId, to: r.user.id }),
+    },
+    article: {
+        usersToArticles: r.many.userToArticle(),
+    },
+    paper: {
+        issue: r.one.issue({ from: r.paper.issueId, to: r.issue.id }),
+        usersToPapers: r.many.userToPaper(),
+    },
+    volume: {
+        issues: r.many.issue(),
+    },
+    issue: {
+        volume: r.one.volume({ from: r.issue.volumeId, to: r.volume.id }),
+        papers: r.many.paper(),
+    },
+    userToArticle: {
+        user: r.one.user({ from: r.userToArticle.userId, to: r.user.id }),
+        article: r.one.article({ from: r.userToArticle.articleId, to: r.article.id }),
+    },
+    userToPaper: {
+        user: r.one.user({ from: r.userToPaper.userId, to: r.user.id }),
+        paper: r.one.paper({ from: r.userToPaper.paperId, to: r.paper.id }),
+    },
 }))
 
-export const sessionRelations = relations(session, ({ one }) => ({
-    user: one(user, {
-        fields: [session._.columns.userId],
-        references: [user._.columns.id],
-    }),
-}))
-
-export const accountRelations = relations(account, ({ one }) => ({
-    user: one(user, {
-        fields: [account._.columns.userId],
-        references: [user._.columns.id],
-    }),
-}))
-
-export const articleRelations = relations(article, ({ many }) => ({
-    usersToArticles: many(userToArticle),
-}))
-
-export const paperRelations = relations(paper, ({ one, many }) => ({
-    issue: one(issue, {
-        fields: [paper._.columns.issueId],
-        references: [issue._.columns.id],
-    }),
-    usersToPapers: many(userToPaper),
-}))
-
-export const volumeRelations = relations(volume, ({ many }) => ({
-    issues: many(issue),
-}))
-
-export const issueRelations = relations(issue, ({ one, many }) => ({
-    volume: one(volume, {
-        fields: [issue._.columns.volumeId],
-        references: [volume._.columns.id],
-    }),
-    papers: many(paper),
-}))
-
-export const userToArticleRelations = relations(userToArticle, ({ one }) => ({
-    user: one(user, {
-        fields: [userToArticle._.columns.userId],
-        references: [user._.columns.id],
-    }),
-    article: one(article, {
-        fields: [userToArticle._.columns.articleId],
-        references: [article._.columns.id],
-    }),
-}))
-
-export const userToPaperRelations = relations(userToPaper, ({ one }) => ({
-    user: one(user, {
-        fields: [userToPaper._.columns.userId],
-        references: [user._.columns.id],
-    }),
-    paper: one(paper, {
-        fields: [userToPaper._.columns.paperId],
-        references: [paper._.columns.id],
-    }),
-}))
+// Per-table aliases for type inference helpers (e.g. InferRelationalSelectModel).
+export const userRelations = relations.user
+export const sessionRelations = relations.session
+export const accountRelations = relations.account
+export const articleRelations = relations.article
+export const paperRelations = relations.paper
+export const volumeRelations = relations.volume
+export const issueRelations = relations.issue
+export const userToArticleRelations = relations.userToArticle
+export const userToPaperRelations = relations.userToPaper
 
 // ─── Schema object for ORM ───────────────────────────────────────────────────
 
 export const productionSchema = {
     user,
-    userRelations,
     session,
-    sessionRelations,
     account,
-    accountRelations,
     article,
-    articleRelations,
     userToArticle,
-    userToArticleRelations,
     volume,
-    volumeRelations,
     issue,
-    issueRelations,
     paper,
-    paperRelations,
     userToPaper,
-    userToPaperRelations,
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────

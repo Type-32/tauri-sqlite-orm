@@ -1,5 +1,5 @@
 import type { AnyTable, InferSelectModel } from './types'
-import type { OneRelation, ManyRelation } from './orm'
+import type { OneRelation, ManyRelation } from './relations-v2'
 
 /** Maps relations() return type to typed relation configs with foreign table preserved */
 export type InferRelationsMap<R extends Record<string, OneRelation | ManyRelation>> = {

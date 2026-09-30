@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test'
-import { eq, inArray, exists, sqliteTable, integer, text, relations, TauriORM } from '../src/index'
+import { eq, inArray, exists, sqliteTable, integer, text, defineRelations, TauriORM } from '../src/index'
 import { subquery } from '../src/subquery'
 import { MockDatabase, removeDb } from './helpers/mock-db'
 import { createOrm, users, posts, tags, postTags } from './helpers/schema'
@@ -262,13 +262,12 @@ describe('Self-reference include (quotingMessage)', () => {
         text: text('text').notNull(),
         quotingMessageId: integer('quoting_message_id').references(() => messages._.columns.id),
     })
-    const messagesRelations = relations(messages, ({ one }) => ({
-        quotingMessage: one(messages, {
-            fields: [messages._.columns.quotingMessageId],
-            references: [messages._.columns.id],
-        }),
+    defineRelations({ _msg: messages }, (r) => ({
+        _msg: {
+            quotingMessage: r.one._msg({ from: r._msg.quotingMessageId, to: r._msg.id }),
+        },
     }))
-    const schemaSelf = { _msg: messages, _msgRelations: messagesRelations }
+    const schemaSelf = { _msg: messages }
 
     beforeAll(async () => {
         removeDb(DB_SELF)

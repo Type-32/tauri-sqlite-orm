@@ -4,7 +4,7 @@ import {
     text,
     boolean,
     real,
-    relations,
+    defineRelations,
     TauriORM,
 } from '../../src/index'
 import { MockDatabase } from './mock-db'
@@ -46,45 +46,26 @@ export const postTags = sqliteTable('post_tags', {
     tagId: integer('tag_id').notNull().references(() => tags._.columns.id),
 })
 
-// ─── Relations ────────────────────────────────────────────────────────────────
+// ─── Relations (v2 API) ───────────────────────────────────────────────────────
 
-export const usersRelations = relations(users, ({ many }) => ({
-    posts: many(posts),
+export const schema = { users, posts, tags, postTags }
+
+defineRelations(schema, (r) => ({
+    users: {
+        posts: r.many.posts(),
+    },
+    posts: {
+        user: r.one.users({ from: r.posts.userId, to: r.users.id }),
+        postTags: r.many.postTags(),
+    },
+    tags: {
+        postTags: r.many.postTags(),
+    },
+    postTags: {
+        post: r.one.posts({ from: r.postTags.postId, to: r.posts.id }),
+        tag: r.one.tags({ from: r.postTags.tagId, to: r.tags.id }),
+    },
 }))
-
-export const postsRelations = relations(posts, ({ one, many }) => ({
-    user: one(users, {
-        fields: [posts._.columns.userId],
-        references: [users._.columns.id],
-    }),
-    postTags: many(postTags),
-}))
-
-export const tagsRelations = relations(tags, ({ many }) => ({
-    postTags: many(postTags),
-}))
-
-export const postTagsRelations = relations(postTags, ({ one }) => ({
-    post: one(posts, {
-        fields: [postTags._.columns.postId],
-        references: [posts._.columns.id],
-    }),
-    tag: one(tags, {
-        fields: [postTags._.columns.tagId],
-        references: [tags._.columns.id],
-    }),
-}))
-
-export const schema = {
-    users,
-    usersRelations,
-    posts,
-    postsRelations,
-    tags,
-    tagsRelations,
-    postTags,
-    postTagsRelations,
-}
 
 // ─── Factory ──────────────────────────────────────────────────────────────────
 

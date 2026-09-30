@@ -34,7 +34,7 @@ Make sure the SQL plugin is registered on the Rust side (see Tauri docs).
 
 ```typescript
 import Database from '@tauri-apps/plugin-sql'
-import { TauriORM, sqliteTable, integer, text, relations, InferSelectModel, InferRelationalSelectModel } from '@type32/tauri-sqlite-orm'
+import { TauriORM, sqliteTable, integer, text, defineRelations, InferSelectModel, InferRelationalSelectModel } from '@type32/tauri-sqlite-orm'
 
 // Define tables
 const users = sqliteTable('users', {
@@ -50,26 +50,20 @@ const posts = sqliteTable('posts', {
   userId: integer('user_id').notNull().references(() => users._.columns.id, { onDelete: 'cascade' }),
 })
 
-// Define relations
-const usersRelations = relations(users, ({ many }) => ({
-  posts: many(posts),
-}))
-
-const postsRelations = relations(posts, ({ one }) => ({
-  user: one(users, {
-    fields: [posts._.columns.userId],
-    references: [users._.columns.id],
-  }),
+// Define relations (all in one place)
+const schema = { users, posts }
+const relations = defineRelations(schema, (r) => ({
+  users: {
+    posts: r.many.posts({ from: r.users.id, to: r.posts.userId }),
+  },
+  posts: {
+    user: r.one.users({ from: r.posts.userId, to: r.users.id }),
+  },
 }))
 
 // Initialize ORM
 const db = await Database.load('sqlite:mydb.db')
-const orm = new TauriORM(db, {
-  users,
-  usersRelations,
-  posts,
-  postsRelations,
-})
+const orm = new TauriORM(db, schema)
 
 // Run migrations
 await orm.migrate()
@@ -83,7 +77,7 @@ const usersWithPosts = await orm
 // Type relational results with InferRelationalSelectModel
 type User = InferSelectModel<typeof users>
 const withPosts = { posts: true } as const
-type UserWithPosts = InferRelationalSelectModel<typeof users, typeof usersRelations, typeof withPosts>
+type UserWithPosts = InferRelationalSelectModel<typeof users, typeof relations.users, typeof withPosts>
 ```
 
 ### Documentation
@@ -94,10 +88,11 @@ type UserWithPosts = InferRelationalSelectModel<typeof users, typeof usersRelati
 
 ### Relations
 
-The ORM supports relations in a Drizzle-style pattern:
+The ORM uses Drizzle's Relational Queries v2 model: define all relations in one place with `defineRelations`, then load them with `.include()`.
 
-1. **One-to-One / Many-to-One**: Use `one()` with `fields` and `references` to define a relation where the current table references another table
-2. **One-to-Many**: Use `many()` to define a relation where another table references the current table
-3. **Many-to-Many**: Use `many(junctionTable)` on both sides and define `one()` on the junction with `fields`/`references` to each entity. Load with nested includes: `include({ postTags: { with: { tag: true } } })`
+1. **One-to-One / Many-to-One**: `r.one.<table>({ from, to })` — the current table references another
+2. **One-to-Many**: `r.many.<table>({ from, to })` — another table references the current table (no matching `one` required)
+3. **Many-to-Many**: `r.many.<table>({ from: col.through(junctionCol), to: col.through(junctionCol) })` — direct relation through a junction table
+4. **Predefined filters**: `where` on a relation, and `optional: false` for required `one` relations
 
 See the [many-to-many example](./docs/many-to-many-example.md) for detailed usage.

@@ -9,7 +9,6 @@ import {
     boolean,
     real,
     defineRelations,
-    through,
     eq,
     TauriORM,
 } from '../../src/index'
@@ -71,16 +70,16 @@ defineRelations(schema, (r) => ({
         postTags: r.many.postTags({ from: r.posts.id, to: r.postTags.postId }),
         // Many-to-many via through(): posts -> tags directly
         tags: r.many.tags({
-            from: through(r.posts.id, r.postTags.postId, postTags),
-            to: through(r.tags.id, r.postTags.tagId, postTags),
+            from: r.posts.id.through(r.postTags.postId),
+            to: r.tags.id.through(r.postTags.tagId),
         }),
     },
     tags: {
         postTags: r.many.postTags({ from: r.tags.id, to: r.postTags.tagId }),
         // Many-to-many via through(): tags -> posts directly
         posts: r.many.posts({
-            from: through(r.tags.id, r.postTags.tagId, postTags),
-            to: through(r.posts.id, r.postTags.postId, postTags),
+            from: r.tags.id.through(r.postTags.tagId),
+            to: r.posts.id.through(r.postTags.postId),
         }),
     },
     postTags: {
