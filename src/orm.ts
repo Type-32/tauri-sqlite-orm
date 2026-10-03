@@ -6,7 +6,6 @@ import {
     UpdateQueryBuilder,
     DeleteQueryBuilder,
     WithQueryBuilder,
-    RelationsBuilder,
 } from './builders'
 import {
     AnySQLiteColumn,
@@ -17,6 +16,7 @@ import {
     ExtractColumnType,
     Mode,
     RelationConfig,
+    ThroughRef,
 } from './types'
 
 // Column class
@@ -40,6 +40,9 @@ export class SQLiteColumn<
         enum: TEnum
         customType: TCustomType
     }
+
+    /** Owning table, set by sqliteTable(). Enables references() and .through() to resolve tables. */
+    __table?: Table<any, any>
 
     constructor(
         name: TName,
@@ -107,8 +110,8 @@ export class SQLiteColumn<
                 references: {
                     getRef: () => {
                         const column = getRef()
-                        const table = (column as any).__table
-                        if (!table) throw new Error(`Column ${(column as any)._?.name} has no __table - ensure it belongs to a table created with sqliteTable()`)
+                        const table = column.__table
+                        if (!table) throw new Error(`Column ${column._.name} has no __table - ensure it belongs to a table created with sqliteTable()`)
                         return { table, column }
                     },
                     onDelete: options?.onDelete,
@@ -132,6 +135,20 @@ export class SQLiteColumn<
     as(alias: string): SQLiteColumn<TName, TType, TMode, TNotNull, THasDefault, TAutoincrement, TEnum, TCustomType> {
         // This is a placeholder for alias functionality
         return this
+    }
+
+    /**
+     * Chain a junction column for many-to-many relations (Drizzle v2 style):
+     * `r.users.id.through(r.usersToGroups.userId)`.
+     */
+    through(junctionColumn: AnySQLiteColumn): ThroughRef {
+        const junctionTable = junctionColumn.__table
+        if (!junctionTable) {
+            throw new Error(
+                `Column "${junctionColumn._.name}" is not attached to a table - ensure it belongs to a table created with sqliteTable()`
+            )
+        }
+        return { column: this, junctionColumn, junctionTable }
     }
 }
 
@@ -200,7 +217,7 @@ export const sqliteTable = <TTableName extends string, TColumns extends Record<s
     const table = new Table(tableName, columns)
     // Attach table to columns so references(() => table._.columns.id) can resolve table name
     for (const col of Object.values(columns)) {
-        (col as any).__table = table
+        col.__table = table
     }
     return table
 }
@@ -223,7 +240,7 @@ export class TauriORM {
 
     constructor(
         private db: DatabaseLike,
-        schema: Record<string, AnyTable | Record<string, Relation>> | undefined = undefined
+        schema: Record<string, AnyTable> | undefined = undefined
     ) {
         this.kysely = new Kysely({ dialect: new TauriDialect(db) })
 
@@ -755,90 +772,6 @@ export class TauriORM {
     async renameColumn(tableName: string, from: string, to: string): Promise<void> {
         await this.db.execute(`ALTER TABLE ${tableName} RENAME COLUMN ${from} TO ${to}`)
     }
-}
-
-// Relations
-export class Relation<T extends AnyTable = AnyTable> {
-    constructor(public foreignTable: T) {}
-}
-
-export class OneRelation<T extends AnyTable = AnyTable> extends Relation<T> {
-    constructor(
-        foreignTable: T,
-        public config?: {
-            fields: AnySQLiteColumn[]
-            references: AnySQLiteColumn[]
-            optional?: boolean
-            alias?: string
-        }
-    ) {
-        super(foreignTable)
-    }
-}
-
-export class ManyRelation<T extends AnyTable = AnyTable> extends Relation<T> {
-    constructor(
-        foreignTable: T,
-        public config?: {
-            from?: AnySQLiteColumn[]
-            to?: AnySQLiteColumn[]
-            through?: {
-                junctionTable: AnyTable
-                fromRef: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
-                toRef: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
-            }
-            optional?: boolean
-            alias?: string
-            where?: (alias: string) => unknown
-        }
-    ) {
-        super(foreignTable)
-    }
-}
-
-type InferRelations<R extends Record<string, Relation>> = {
-    [K in keyof R]: R[K] extends OneRelation<infer T>
-        ? { type: 'one'; foreignTable: T; fields: AnySQLiteColumn[]; references: AnySQLiteColumn[] }
-        : R[K] extends ManyRelation<infer T>
-        ? { type: 'many'; foreignTable: T }
-        : never
-}
-
-export const relations = <T extends AnyTable, R extends Record<string, Relation>>(
-    table: T,
-    relationsCallback: (helpers: RelationsBuilder) => R
-): R => {
-    const builtRelations = relationsCallback({
-        one: <U extends AnyTable>(
-            foreignTable: U,
-            config?: { fields: AnySQLiteColumn[]; references: AnySQLiteColumn[]; optional?: boolean; alias?: string }
-        ) => {
-            return new OneRelation(foreignTable, config)
-        },
-        many: <U extends AnyTable>(foreignTable: U) => {
-            return new ManyRelation(foreignTable)
-        },
-    })
-
-    for (const [name, relation] of Object.entries(builtRelations)) {
-        if (relation instanceof OneRelation) {
-            table.relations[name] = {
-                type: 'one',
-                foreignTable: relation.foreignTable,
-                fields: relation.config?.fields,
-                references: relation.config?.references,
-                optional: relation.config?.optional,
-                alias: relation.config?.alias,
-            }
-        } else if (relation instanceof ManyRelation) {
-            table.relations[name] = {
-                type: 'many',
-                foreignTable: relation.foreignTable,
-            }
-        }
-    }
-
-    return builtRelations
 }
 
 // Helper functions

@@ -48,6 +48,8 @@ function resolveRelationColumns(table: AnyTable, include: NestedInclude): AnySQL
 type NestedInclude = boolean | {
     columns?: string[] | Record<string, boolean>
     with?: Record<string, NestedInclude>
+    /** Predefined filter applied to the joined relation (receives the joined alias). */
+    where?: (alias: string) => Condition
 }
 
 type ExtractRelationNames<T extends AnyTable> = T['relations'] extends Record<string, any>
@@ -74,6 +76,9 @@ export class SelectQueryBuilder<
     }> = []
     private _isDistinct = false
     private _includedColumnAliases: string[] = []
+    private _hasLimit = false
+    private _hasOffset = false
+    private _rootAlias = ''
 
     constructor(private readonly kysely: Kysely<any>, table: TTable, columns?: TSelectedColumns) {
         this._table = table
@@ -118,11 +123,13 @@ export class SelectQueryBuilder<
     }
 
     limit(count: number): this {
+        this._hasLimit = true
         this._builder = this._builder.limit(count)
         return this
     }
 
     offset(count: number): this {
+        this._hasOffset = true
         this._builder = this._builder.offset(count)
         return this
     }
@@ -191,9 +198,14 @@ export class SelectQueryBuilder<
         const hasIncludes = Object.values(this._includeRelations).some((i) => i)
         const baseTableName = this._table._.name
         const needsSubquery =
-            hasIncludes && this.hasSelfReferenceInIncludes(this._table, this._includeRelations as any)
+            hasIncludes &&
+            (this.hasSelfReferenceInIncludes(this._table, this._includeRelations as any) ||
+                this._hasLimit ||
+                this._hasOffset)
 
-        // Only wrap in subquery when self-reference is included (avoids ambiguous column names).
+        // Wrap in a subquery when: a self-reference is included (avoids ambiguous column
+        // names), or LIMIT/OFFSET is set alongside includes (so the limit applies to the
+        // root entity rather than truncating the joined relation rows).
         // Re-select with simple aliases so _base.id works; then re-alias to "table.col" for processRelationResults.
         if (needsSubquery) {
             const selected = this._columns
@@ -251,12 +263,15 @@ export class SelectQueryBuilder<
                         alias === '_base'
                             ? sql.ref(`_base.${colName}`)
                             : sql.ref(`${alias}.${colName}`)
-                    const onCondition = sql<SqlBool>`${sql.join(
+                    let onCondition: Expression<SqlBool> = sql<SqlBool>`${sql.join(
                         relation.fields.map((field, i) =>
                             sql`${parentRef(parentAlias, field._.name)} = ${sql.ref(`${foreignAlias}.${relation.references![i]._.name}`)}`
                         ),
                         sql` AND `
                     )}`
+                    if (typeof include === 'object' && include.where) {
+                        onCondition = and(onCondition, include.where(foreignAlias) as Condition)
+                    }
                     this._builder = this._builder
                         .leftJoin(
                             `${foreignTable._.name} as ${foreignAlias}`,
@@ -278,6 +293,9 @@ export class SelectQueryBuilder<
                         let join2: Expression<SqlBool> = sql<SqlBool>`${sql.ref(`${junctionAlias}.${toJ.junctionColumn._.name}`)} = ${sql.ref(`${foreignAlias}.${toJ.column._.name}`)}`
                         if (relation.where) {
                             join2 = and(join2, relation.where(foreignAlias) as Condition)
+                        }
+                        if (typeof include === 'object' && include.where) {
+                            join2 = and(join2, include.where(foreignAlias) as Condition)
                         }
                         this._builder = this._builder
                             .leftJoin(
@@ -317,6 +335,9 @@ export class SelectQueryBuilder<
                             if (relation.where) {
                                 onCondition = and(onCondition, relation.where(foreignAlias) as Condition)
                             }
+                            if (typeof include === 'object' && include.where) {
+                                onCondition = and(onCondition, include.where(foreignAlias) as Condition)
+                            }
                             this._builder = this._builder
                                 .leftJoin(
                                     `${foreignTable._.name} as ${foreignAlias}`,
@@ -334,6 +355,7 @@ export class SelectQueryBuilder<
         }
 
         const rootAlias = needsSubquery ? '_base' : baseTableName
+        this._rootAlias = rootAlias
         processRelations(this._table, rootAlias, this._includeRelations as any, 0)
     }
 
@@ -445,7 +467,7 @@ export class SelectQueryBuilder<
                 } else {
                     // Skip junction table alias (used for through() many-to-many)
                     if (tableAlias.endsWith('_jn')) continue
-                    const path = parseRelationPath(tableAlias, this._table._.name)
+                    const path = parseRelationPath(tableAlias, this._rootAlias || this._table._.name)
                     if (path.length > 0) {
                         const relationConfig = getNestedRelation(this._table, path)
                         const foreignTable = relationConfig?.foreignTable

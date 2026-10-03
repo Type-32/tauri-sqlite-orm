@@ -3,44 +3,72 @@
  * Use defineRelations() for a single place to define all relations, or defineRelationsPart() to split into parts.
  */
 
-import { AnySQLiteColumn, AnyTable } from './types'
-import { OneRelation, ManyRelation } from './orm'
+import { AnySQLiteColumn, AnyTable, ThroughRef } from './types'
 import type { Condition } from './operators'
 
-/** Extract tables from a schema object (filters to Table instances with _ and relations) */
+/** One relation: the current table belongs to one record of the foreign table (many-to-one / one-to-one). */
+export class OneRelation<
+    T extends AnyTable = AnyTable,
+    TOptional extends boolean | undefined = boolean | undefined
+> {
+    constructor(
+        public foreignTable: T,
+        public config?: {
+            fields: AnySQLiteColumn[]
+            references: AnySQLiteColumn[]
+            optional?: TOptional
+            alias?: string
+        }
+    ) {}
+}
+
+/** Many relation: the current table has many records of the foreign table (one-to-many / many-to-many). */
+export class ManyRelation<T extends AnyTable = AnyTable> {
+    constructor(
+        public foreignTable: T,
+        public config?: {
+            from?: AnySQLiteColumn[]
+            to?: AnySQLiteColumn[]
+            through?: {
+                junctionTable: AnyTable
+                fromRef: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
+                toRef: { column: AnySQLiteColumn; junctionColumn: AnySQLiteColumn }
+            }
+            optional?: boolean
+            alias?: string
+            where?: (alias: string) => Condition
+        }
+    ) {}
+}
+
+/** Type guard: is this value a Table instance (has _ with name + columns, and a relations map)? */
+function isTable(v: unknown): v is AnyTable {
+    if (typeof v !== 'object' || v === null) return false
+    const candidate = v as { _?: { name?: unknown; columns?: unknown }; relations?: unknown }
+    return (
+        typeof candidate._?.name === 'string' &&
+        typeof candidate._.columns === 'object' &&
+        candidate._.columns !== null &&
+        typeof candidate.relations === 'object' &&
+        candidate.relations !== null
+    )
+}
+
+/** Extract tables from a schema object (filters to Table instances). */
 function extractTables(schema: Record<string, unknown>): Record<string, AnyTable> {
     const tables: Record<string, AnyTable> = {}
     for (const [key, value] of Object.entries(schema)) {
-        const v = value as any
-        if (v && typeof v === 'object' && v._?.name && v._?.columns && typeof v.relations === 'object') {
-            tables[key] = v as AnyTable
-        }
+        if (isTable(value)) tables[key] = value
     }
     return tables
 }
 
-/** Options for one() relation - from/to replace fields/references */
-export interface OneRelationOptions {
+/** Options for one() relation - from/to replace fields/references. `optional` is captured literally so `optional: false` is non-null at the type level. */
+export interface OneRelationOptions<TOptional extends boolean | undefined = boolean | undefined> {
     from: AnySQLiteColumn | AnySQLiteColumn[]
     to: AnySQLiteColumn | AnySQLiteColumn[]
-    optional?: boolean
+    optional?: TOptional
     alias?: string
-}
-
-/** Reference for through() - column with junction column for many-to-many */
-export interface ThroughRef {
-    column: AnySQLiteColumn
-    junctionColumn: AnySQLiteColumn
-    junctionTable: AnyTable
-}
-
-/** Create a through reference for many-to-many: through(column, junctionColumn, junctionTable) */
-export function through(
-    column: AnySQLiteColumn,
-    junctionColumn: AnySQLiteColumn,
-    junctionTable: AnyTable
-): ThroughRef {
-    return { column, junctionColumn, junctionTable }
 }
 
 /** Options for many() relation - optional explicit from/to for many-without-one, or through() for many-to-many */
@@ -58,9 +86,15 @@ function toArray(col: AnySQLiteColumn | AnySQLiteColumn[]): AnySQLiteColumn[] {
     return Array.isArray(col) ? col : [col]
 }
 
-/** Check if value is ThroughRef */
-function isThroughRef(v: any): v is ThroughRef {
-    return v && typeof v === 'object' && 'column' in v && 'junctionColumn' in v && 'junctionTable' in v
+/** Check if value is a ThroughRef (column chained with a junction column). */
+function isThroughRef(v: unknown): v is ThroughRef {
+    return (
+        typeof v === 'object' &&
+        v !== null &&
+        'column' in v &&
+        'junctionColumn' in v &&
+        'junctionTable' in v
+    )
 }
 
 /** Build table column references for use in from/to - r.users.id etc. */
@@ -84,7 +118,9 @@ export type BuildR<Tables extends Record<string, AnyTable>> = {
     [K in keyof Tables]: Tables[K]['_']['columns']
 } & {
     one: {
-        [K in keyof Tables]: (opts: OneRelationOptions) => OneRelation<Tables[K]>
+        [K in keyof Tables]: <const TOptional extends boolean | undefined = undefined>(
+            opts: OneRelationOptions<TOptional>
+        ) => OneRelation<Tables[K], TOptional>
     }
     many: {
         [K in keyof Tables]: (opts?: ManyRelationOptions) => ManyRelation<Tables[K]>
@@ -94,9 +130,9 @@ export type BuildR<Tables extends Record<string, AnyTable>> = {
 function buildR<Tables extends Record<string, AnyTable>>(
     tables: Tables
 ): BuildR<Tables> {
-    const tableRefs = {} as Record<string, Record<string, AnySQLiteColumn>>
-    const oneFns = {} as Record<string, (opts: OneRelationOptions) => OneRelation<AnyTable>>
-    const manyFns = {} as Record<string, (opts?: ManyRelationOptions) => ManyRelation<AnyTable>>
+    const tableRefs: Record<string, Record<string, AnySQLiteColumn>> = {}
+    const oneFns: Record<string, (opts: OneRelationOptions) => OneRelation<AnyTable>> = {}
+    const manyFns: Record<string, (opts?: ManyRelationOptions) => ManyRelation<AnyTable>> = {}
 
     for (const [tableKey, table] of Object.entries(tables)) {
         tableRefs[tableKey] = buildTableRef(table)
@@ -135,9 +171,9 @@ function buildR<Tables extends Record<string, AnyTable>>(
 
     return {
         ...tableRefs,
-        one: oneFns as any,
-        many: manyFns as any,
-    } as any
+        one: oneFns,
+        many: manyFns,
+    } as unknown as BuildR<Tables>
 }
 
 /** Apply relations from defineRelations result to tables */
@@ -197,6 +233,8 @@ export type DefineRelationsCallback<Tables extends Record<string, AnyTable>> = (
 /**
  * Define all relations for your schema in one place (v2 API).
  * Uses from/to instead of fields/references, and supports many-without-one.
+ * Returns exactly the relations you defined, keyed by table name, so the result
+ * can be indexed (e.g. `relations.users`) by type-inference helpers.
  *
  * @example
  * ```ts
@@ -214,24 +252,34 @@ export type DefineRelationsCallback<Tables extends Record<string, AnyTable>> = (
  * }))
  * ```
  */
-export function defineRelations<TSchema extends Record<string, unknown>>(
+export function defineRelations<
+    TSchema extends Record<string, unknown>,
+    TRelations extends Record<string, Record<string, OneRelation | ManyRelation>>
+>(
     schema: TSchema,
-    callback: DefineRelationsCallback<ExtractTables<TSchema>>
-): Record<string, Record<string, OneRelation | ManyRelation>> {
+    callback: (r: BuildR<ExtractTables<TSchema>>) => TRelations
+): TRelations {
     const tables = extractTables(schema) as ExtractTables<TSchema>
     const r = buildR(tables)
     const result = callback(r)
-    applyRelationsToTables(tables, result as Record<string, Record<string, OneRelation | ManyRelation>>)
-    return result as Record<string, Record<string, OneRelation | ManyRelation>>
+    applyRelationsToTables(tables, result)
+    return result
 }
 
 /**
- * Define a part of relations - merge multiple parts when passing to TauriORM.
- * Useful for splitting large schema definitions.
+ * Define a part of relations. Relations are attached to tables via side effect;
+ * the returned map is for typing only. Useful for splitting large schema definitions.
  */
-export function defineRelationsPart<TSchema extends Record<string, unknown>>(
+export function defineRelationsPart<
+    TSchema extends Record<string, unknown>,
+    TRelations extends Record<string, Record<string, OneRelation | ManyRelation>>
+>(
     schema: TSchema,
-    callback: DefineRelationsCallback<Record<string, AnyTable>>
-): Record<string, Record<string, OneRelation | ManyRelation>> {
-    return defineRelations(schema, callback)
+    callback: (r: BuildR<ExtractTables<TSchema>>) => TRelations
+): TRelations {
+    const tables = extractTables(schema) as ExtractTables<TSchema>
+    const r = buildR(tables)
+    const result = callback(r)
+    applyRelationsToTables(tables, result)
+    return result
 }

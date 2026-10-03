@@ -1,6 +1,6 @@
 {
     "name": "@type32/tauri-sqlite-orm",
-    "version": "0.4.1-5",
+    "version": "0.5.0",
     "description": "A Drizzle-like ORM for Tauri v2's SQL JS API plugin.",
     "main": "./dist/index.js",
     "module": "./dist/index.mjs",
@@ -18,9 +18,9 @@
         "build": "tsdown src/index.ts --format esm,cjs --dts",
         "dev": "tsdown src/index.ts --format esm,cjs --dts --watch",
         "test": "pnpm test",
-        "release:minor": "pnpm run build && pnpm pm version minor && pnpm publish",
-        "release:prerelease": "pnpm run build && pnpm pm version prerelease && pnpm publish",
-        "release:patch": "pnpm run build && pnpm pm version patch && pnpm publish",
+        "release:minor": "pnpm run build && pnpm version minor --no-git-checks && pnpm publish --no-git-checks",
+        "release:prerelease": "pnpm run build && pnpm version prerelease && pnpm publish",
+        "release:patch": "pnpm run build && pnpm version patch && pnpm publish",
         "update-deps": "pnpm update --latest && pnpm add typescript@6.0.3 && pnpm approve-builds --all"
     },
     "keywords": [

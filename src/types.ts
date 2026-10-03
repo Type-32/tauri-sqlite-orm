@@ -85,6 +85,16 @@ export type InferSelectModel<T extends AnyTable> = {
 }
 export type RelationType = 'one' | 'many'
 
+/** A column chained with its junction-table column via `.through()` for many-to-many relations. */
+export interface ThroughRef {
+    /** The "real" column (parent PK or foreign PK). */
+    column: AnySQLiteColumn
+    /** The junction table's FK column pointing at `column`. */
+    junctionColumn: AnySQLiteColumn
+    /** The junction table, resolved from `junctionColumn`'s owning table. */
+    junctionTable: AnyTable
+}
+
 export interface RelationConfig {
     type: RelationType
     foreignTable: AnyTable
